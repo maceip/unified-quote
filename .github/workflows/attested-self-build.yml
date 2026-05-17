@@ -43,7 +43,7 @@ jobs:
           rm -rf attest-out
           mkdir -p attest-out
           sudo bountynet build v2 \
-            --cmd 'echo "attested self-build: $(git -C v2 rev-parse HEAD 2>/dev/null || echo no-git)"' \
+            --cmd 'cargo build --release' \
             --output "$GITHUB_WORKSPACE/attest-out"
           echo "--- output ---"
           ls -la attest-out/

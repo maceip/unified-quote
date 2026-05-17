@@ -109,8 +109,7 @@ pub const TCG_DICE_CMW_OID: &[u64] = &[2, 23, 133, 5, 4, 9];
 
 /// Generate a fresh P-256 keypair. Never exported outside the enclave.
 pub fn generate_keypair() -> Result<KeyPair> {
-    KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)
-        .map_err(|e| anyhow!("rcgen keypair: {e}"))
+    KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).map_err(|e| anyhow!("rcgen keypair: {e}"))
 }
 
 /// sha256 of the keypair's SubjectPublicKeyInfo DER encoding.
@@ -168,8 +167,7 @@ pub fn extract_eat_from_cert(cert_der: &[u8]) -> Result<Option<Vec<u8>>> {
     use x509_cert::der::Decode;
     use x509_cert::Certificate;
 
-    let cert = Certificate::from_der(cert_der)
-        .map_err(|e| anyhow!("x509 decode: {e}"))?;
+    let cert = Certificate::from_der(cert_der).map_err(|e| anyhow!("x509 decode: {e}"))?;
 
     let exts = match &cert.tbs_certificate.extensions {
         Some(v) => v,
@@ -183,9 +181,7 @@ pub fn extract_eat_from_cert(cert_der: &[u8]) -> Result<Option<Vec<u8>>> {
         if ext.extn_id == target_oid {
             let inner = ext.extn_value.as_bytes().to_vec();
             // rcgen double-wraps in an extra OCTET STRING. Peel if present.
-            if let Ok(outer) =
-                x509_cert::der::asn1::OctetString::from_der(&inner)
-            {
+            if let Ok(outer) = x509_cert::der::asn1::OctetString::from_der(&inner) {
                 return Ok(Some(outer.as_bytes().to_vec()));
             }
             return Ok(Some(inner));
@@ -200,8 +196,7 @@ pub fn spki_hash_of_cert(cert_der: &[u8]) -> Result<[u8; 32]> {
     use x509_cert::der::{Decode, Encode};
     use x509_cert::Certificate;
 
-    let cert = Certificate::from_der(cert_der)
-        .map_err(|e| anyhow!("x509 decode: {e}"))?;
+    let cert = Certificate::from_der(cert_der).map_err(|e| anyhow!("x509 decode: {e}"))?;
     let spki_der = cert
         .tbs_certificate
         .subject_public_key_info

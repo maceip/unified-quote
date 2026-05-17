@@ -213,8 +213,9 @@ def resolve(proposal_id: bytes32):
     approved: bool = False
 
     if total == 0:
-        # No votes = approved by default (no objections)
-        approved = True
+        # No quorum: do not advance current Value X. The proposer can
+        # reclaim stake after escrow, but silence is not approval.
+        approved = False
     else:
         # Simple majority
         approved = p.approve_count > p.reject_count
@@ -253,9 +254,6 @@ def claim_reward(proposal_id: bytes32):
     assert block.number >= p.escrow_unlock_block, "escrow locked"
     assert not self.claimed[msg.sender][proposal_id], "already claimed"
 
-    vote: uint8 = self.reveals[msg.sender][proposal_id]
-    assert vote > 0, "did not vote"
-
     reward: uint256 = 0
 
     if p.approved:
@@ -264,10 +262,16 @@ def claim_reward(proposal_id: bytes32):
             reward = p.stake
         # Approvers get nothing extra (they endorsed the update)
     else:
-        # Rejected: rejectors split the proposer's stake
-        if vote == 2:  # rejected
-            assert p.reject_count > 0, "no rejectors"
-            reward = p.stake // p.reject_count
+        if p.reject_count == 0:
+            # No quorum: no one earned the stake, so refund proposer.
+            if msg.sender == p.proposer:
+                reward = p.stake
+        else:
+            vote: uint8 = self.reveals[msg.sender][proposal_id]
+            assert vote > 0, "did not vote"
+            # Rejected: rejectors split the proposer's stake
+            if vote == 2:  # rejected
+                reward = p.stake // p.reject_count
 
     assert reward > 0, "no reward"
     self.claimed[msg.sender][proposal_id] = True

@@ -14,12 +14,12 @@ This document is the design. Code lives elsewhere when it exists.
 
 ## Why this exists
 
-Shadow attestation is the feature that makes the rest of bountynet
-meaningful to a visitor who lands on the GitHub Pages site. Without it,
-the story is "we run our own stuff in a TEE, you'd have to do the same."
-With it, the story is "add one workflow step, get a hardware-rooted
-rebuild witness bound to GitHub's own attestation of your workflow."
-That's the demo that justifies the click.
+Shadow attestation is the feature that makes bountynet useful to people
+who do not care about TEEs or code signing. Without it, the story is
+"we run our own stuff in a TEE, you'd have to do the same." With it, the
+story is "add one workflow step, get a hardware-rooted rebuild witness
+bound to GitHub's own attestation of your workflow." That is the path to
+package promotion, AI-agent trust receipts, and secret release gates.
 
 It is also where the project's hardest questions live: running untrusted
 code in the most sensitive part of our own infrastructure. Everything

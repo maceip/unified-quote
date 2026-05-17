@@ -29,8 +29,9 @@ Filename: `<value_x[0..16]>.json` — short prefix of Value X, for easy lookup.
 
 Each entry has a detached signature sidecar: `<value_x[0..16]>.json.sig`.
 
-**Today:** signature field format is defined but verification is stubbed.
-The signer will be Sigstore keyless (cosign + Fulcio + GitHub OIDC), so a
+**Today:** unsigned entries are informational only, and sidecars are reported
+as unchecked until Sigstore verification lands in `src/registry.rs`. The
+signer will be Sigstore keyless (cosign + Fulcio + GitHub OIDC), so a
 maintainer never holds a key — the CI workflow identity is what signs.
 
 **Migration path:** swap the verifier impl in `src/registry.rs`. The

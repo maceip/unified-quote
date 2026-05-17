@@ -47,21 +47,33 @@ fn collect_hashes(
     for entry in entries {
         let path = entry.path();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let metadata = std::fs::symlink_metadata(&path)?;
+        let file_type = metadata.file_type();
 
         if SKIP_NAMES.contains(&name) {
             continue;
         }
 
-        if path.is_dir() {
+        if file_type.is_symlink() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "source identity cannot include symlinks: {}",
+                    path.display()
+                ),
+            ));
+        }
+
+        if file_type.is_dir() {
             collect_hashes(base, &path, out)?;
-        } else if path.is_file() {
+        } else if file_type.is_file() {
             let bytes = std::fs::read(&path)?;
             let hash: [u8; 48] = Sha384::digest(&bytes).into();
             let rel = path
                 .strip_prefix(base)
                 .unwrap_or(&path)
                 .to_string_lossy()
-                .to_string();
+                .replace('\\', "/");
             out.push((rel, hash));
         }
     }

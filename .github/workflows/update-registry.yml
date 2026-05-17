@@ -2,11 +2,12 @@ name: Update Value X Registry
 
 on:
   workflow_run:
-    workflows: ["Build & Attest Runner Image"]
+    workflows: ["Attested self-build (the ouroboros)"]
     types: [completed]
     branches: [main]
 
 permissions:
+  actions: read
   contents: write
 
 jobs:
@@ -16,52 +17,80 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Get image digest from build
-        id: digest
-        run: |
-          # Get the digest from the latest GHCR image
-          DIGEST=$(gh api \
-            /orgs/$(echo $GITHUB_REPOSITORY | cut -d/ -f1)/packages/container/$(echo $GITHUB_REPOSITORY | cut -d/ -f2)/versions \
-            --jq '.[0].name' 2>/dev/null || echo "unknown")
-          echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
-          echo "Image digest: ${DIGEST}"
+      - name: Download attested self-build artifact
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Compute Value X
-        id: valuex
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          # Build the shim and runner in a temp container to compute Value X
-          # For now, use the Value X from the running instance if available
-          # This will be automated once we have a stable compute pipeline
-          echo "value_x=pending-compute" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          rm -rf attest-out
+          mkdir -p attest-out
+          gh run download "$RUN_ID" \
+            --name "attested-self-build-${HEAD_SHA}" \
+            --dir attest-out
+          test -s attest-out/attestation.json
+          test -s attest-out/attestation.cbor
 
-      - name: Update registry
+      - name: Write v2 registry entry
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
         run: |
-          COMMIT=$(git rev-parse --short HEAD)
-          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          set -euo pipefail
+          python3 - <<'PY'
+          import datetime
+          import hashlib
+          import json
+          import pathlib
+          import os
 
-          # Add entry to registry using jq
-          jq --arg vx "${{ steps.valuex.outputs.value_x }}" \
-             --arg commit "$COMMIT" \
-             --arg ts "$TIMESTAMP" \
-             --arg digest "${{ steps.digest.outputs.digest }}" \
-             '.entries += [{
-               "value_x": $vx,
-               "git_commit": $commit,
-               "runner_version": "2.323.0",
-               "build_attestation_hash": null,
-               "image_digest": $digest,
-               "registered_at": $ts,
-               "recommended": true,
-               "deprecated": false,
-               "notes": "Auto-registered from CI build"
-             }]' registry.json > registry.json.tmp && mv registry.json.tmp registry.json
+          att_path = pathlib.Path("attest-out/attestation.json")
+          cbor_path = pathlib.Path("attest-out/attestation.cbor")
+          att = json.loads(att_path.read_text())
+          value_x = att["value_x"]
+          platform = att.get("platform", "")
+          measurement = att.get("platform_measurement")
+          cbor_sha256 = hashlib.sha256(cbor_path.read_bytes()).hexdigest()
+          approved_at = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+          platform_measurements = {}
+          if measurement:
+              if platform == "Nitro":
+                  platform_measurements["nitro_pcr0"] = measurement
+              elif platform == "Tdx":
+                  platform_measurements["tdx_mrtd"] = measurement
+              elif platform == "SevSnp":
+                  platform_measurements["snp_measurement"] = measurement
+
+          entry = {
+              "value_x": value_x,
+              "source_commit": os.environ["HEAD_SHA"],
+              "platform_measurements": platform_measurements,
+              "status": "recommended",
+              "approved_at": approved_at,
+              "notes": (
+                  "Auto-registered from attested self-build workflow run "
+                  f"{os.environ['RUN_ID']}: {os.environ['RUN_URL']}"
+              ),
+              "source_hash": att.get("source_hash"),
+              "artifact_hash": att.get("artifact_hash"),
+              "attestation_cbor_sha256": cbor_sha256,
+          }
+
+          out_dir = pathlib.Path("v2/registry")
+          out_dir.mkdir(parents=True, exist_ok=True)
+          out_path = out_dir / f"{value_x[:16]}.json"
+          out_path.write_text(json.dumps(entry, indent=2, sort_keys=True) + "\n")
+          print(out_path)
+          PY
 
       - name: Commit registry update
         run: |
+          set -euo pipefail
           git config user.name "bountynet-bot"
           git config user.email "bot@bountynet.dev"
-          git add registry.json
-          git diff --cached --quiet || git commit -m "registry: update Value X for $(git rev-parse --short HEAD)"
+          git add v2/registry
+          git diff --cached --quiet || git commit -m "registry: update Value X for ${GITHUB_SHA::7} [skip ci]"
           git push

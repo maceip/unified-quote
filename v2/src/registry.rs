@@ -63,7 +63,10 @@ pub struct Entry {
 #[derive(Debug, Clone)]
 pub enum Lookup {
     /// Entry found and signature verified (or signature verification skipped).
-    Found { entry: Entry, signature: SignatureState },
+    Found {
+        entry: Entry,
+        signature: SignatureState,
+    },
     /// Value X is not in the registry at all.
     Unknown,
 }
@@ -98,7 +101,7 @@ pub enum TrustedIdentity {
     RawPublicKey {
         algorithm: String, // "ed25519" | "ecdsa-p256"
         spki_der: Vec<u8>,
-        label: String,     // human-readable, shown on verify
+        label: String, // human-readable, shown on verify
     },
 }
 
@@ -148,7 +151,10 @@ impl Registry {
     pub fn load(dir: &Path, trust_root: TrustRoot) -> anyhow::Result<Self> {
         let mut entries = HashMap::new();
         if !dir.exists() {
-            return Ok(Self { entries, trust_root });
+            return Ok(Self {
+                entries,
+                trust_root,
+            });
         }
         for e in std::fs::read_dir(dir)? {
             let e = e?;
@@ -162,26 +168,39 @@ impl Registry {
             let sig_state = Self::check_sidecar(&path, &body, &trust_root)?;
             entries.insert(entry.value_x.clone(), (entry, sig_state));
         }
-        Ok(Self { entries, trust_root })
+        Ok(Self {
+            entries,
+            trust_root,
+        })
     }
 
     /// Default load: look for the project's registry directory and use
     /// the project's default `TrustRoot`. This is the path
     /// `bountynet check` takes when no config is provided.
     pub fn load_default() -> anyhow::Result<Self> {
-        let candidates = [
-            PathBuf::from("v2/registry"),
-            PathBuf::from("registry"),
-        ];
-        for c in &candidates {
-            if c.exists() {
-                return Self::load(c, TrustRoot::bountynet_default());
+        let trust_root = TrustRoot::bountynet_default();
+        let mut merged = Self {
+            entries: HashMap::new(),
+            trust_root: trust_root.clone(),
+        };
+
+        for c in [PathBuf::from("v2/registry"), PathBuf::from("registry")] {
+            if c.exists() && c.is_dir() {
+                let loaded = Self::load(&c, trust_root.clone())?;
+                merged.entries.extend(loaded.entries);
             }
         }
-        Ok(Self {
-            entries: HashMap::new(),
-            trust_root: TrustRoot::bountynet_default(),
-        })
+
+        // v1 kept a root `registry.json` containing `{ entries: [...] }`.
+        // Keep reading it during the v2 migration so the CLI reports the
+        // same trust state the repository visibly publishes.
+        for c in [PathBuf::from("registry.json")] {
+            if c.exists() && c.is_file() {
+                merged.load_legacy_registry_json(&c)?;
+            }
+        }
+
+        Ok(merged)
     }
 
     pub fn lookup(&self, value_x_hex: &str) -> Lookup {
@@ -236,6 +255,85 @@ impl Registry {
         //   Ok(Unchecked)  // sig present but no identity in trust root matched
         Ok(SignatureState::Unchecked)
     }
+
+    fn load_legacy_registry_json(&mut self, path: &Path) -> anyhow::Result<()> {
+        let body = std::fs::read_to_string(path)?;
+        let root: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|err| anyhow::anyhow!("{}: {err}", path.display()))?;
+        let entries = root
+            .get("entries")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| anyhow::anyhow!("{}: missing entries array", path.display()))?;
+
+        for raw in entries {
+            let value_x = raw
+                .get("value_x")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("{}: entry missing value_x", path.display()))?
+                .to_string();
+            let deprecated = raw
+                .get("deprecated")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let recommended = raw
+                .get("recommended")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let status = if deprecated {
+                Status::Deprecated
+            } else if recommended {
+                Status::Recommended
+            } else {
+                Status::Revoked
+            };
+            let pm = raw
+                .get("platform_measurements")
+                .cloned()
+                .unwrap_or_default();
+            let entry = Entry {
+                value_x: value_x.clone(),
+                source_commit: raw
+                    .get("source_commit")
+                    .or_else(|| raw.get("git_commit"))
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string),
+                platform_measurements: PlatformMeasurements {
+                    nitro_pcr0: pm
+                        .get("nitro_pcr0")
+                        .and_then(|v| v.as_str())
+                        .map(ToString::to_string),
+                    tdx_mrtd: pm
+                        .get("tdx_mrtd")
+                        .and_then(|v| v.as_str())
+                        .map(ToString::to_string),
+                    snp_measurement: pm
+                        .get("snp_measurement")
+                        .and_then(|v| v.as_str())
+                        .map(ToString::to_string),
+                },
+                status,
+                approved_at: raw
+                    .get("approved_at")
+                    .or_else(|| raw.get("registered_at"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+                deprecated_at: None,
+                revoked_at: None,
+                notes: raw
+                    .get("notes")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            };
+
+            self.entries
+                .entry(value_x)
+                .or_insert((entry, SignatureState::Missing));
+        }
+
+        Ok(())
+    }
 }
 
 /// Human-readable summary of a lookup result. Used by `bountynet check`.
@@ -244,7 +342,7 @@ pub fn describe(lookup: &Lookup) -> String {
         Lookup::Found { entry, signature } => {
             let sig = match signature {
                 SignatureState::Verified => "signed",
-                SignatureState::Unchecked => "signed (unchecked)",
+                SignatureState::Unchecked => "signature sidecar present (unchecked)",
                 SignatureState::Missing => "UNSIGNED",
             };
             let status = match entry.status {

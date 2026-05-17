@@ -41,8 +41,7 @@ pub struct TpmAttestation {
 /// Check if NitroTPM is available (either the attestation tool or sysfs PCRs).
 pub fn tpm_available() -> bool {
     // Check for the signed attestation tool first
-    which_nitro_tpm_attest().is_some()
-        || std::path::Path::new(TPM_SYSFS_BASE).exists()
+    which_nitro_tpm_attest().is_some() || std::path::Path::new(TPM_SYSFS_BASE).exists()
 }
 
 /// Collect NitroTPM attestation.
@@ -74,8 +73,7 @@ fn collect_signed_attestation(tool_path: &str, nonce: &[u8]) -> Result<TpmAttest
 
     // Write nonce to a temp file
     let nonce_path = "/tmp/bountynet-tpm-nonce";
-    std::fs::write(nonce_path, nonce)
-        .map_err(|e| format!("write nonce: {e}"))?;
+    std::fs::write(nonce_path, nonce).map_err(|e| format!("write nonce: {e}"))?;
 
     // Call nitro-tpm-attest with nonce
     let output = std::process::Command::new(tool_path)
@@ -122,13 +120,9 @@ fn collect_sysfs_pcrs() -> Result<TpmAttestation, String> {
     let pcrs: Vec<[u8; 32]> = (0..8)
         .map(|i| {
             let path = format!("{TPM_SYSFS_BASE}/{i}");
-            let text = std::fs::read_to_string(&path)
-                .map_err(|e| format!("read PCR{i}: {e}"))?;
-            let bytes = hex::decode(text.trim())
-                .map_err(|e| format!("PCR{i} hex decode: {e}"))?;
-            bytes
-                .try_into()
-                .map_err(|_| format!("PCR{i} not 32 bytes"))
+            let text = std::fs::read_to_string(&path).map_err(|e| format!("read PCR{i}: {e}"))?;
+            let bytes = hex::decode(text.trim()).map_err(|e| format!("PCR{i} hex decode: {e}"))?;
+            bytes.try_into().map_err(|_| format!("PCR{i} not 32 bytes"))
         })
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -186,9 +180,7 @@ fn extract_pcrs_from_attestation_doc(doc: &[u8]) -> Option<Vec<[u8; 32]>> {
                     if let Value::Map(pcr_map) = v {
                         let mut pcrs = Vec::new();
                         for i in 0..8 {
-                            if let Some(Value::Bytes(b)) =
-                                pcr_map.get(&Value::Integer(i))
-                            {
+                            if let Some(Value::Bytes(b)) = pcr_map.get(&Value::Integer(i)) {
                                 if b.len() == 32 {
                                     let mut arr = [0u8; 32];
                                     arr.copy_from_slice(b);

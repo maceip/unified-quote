@@ -62,9 +62,7 @@ pub async fn provision_cert_for_enclave(
 
     // Step 2: Create order
     let identifiers = vec![Identifier::Dns(domain.to_string())];
-    let mut order = account
-        .new_order(&NewOrder::new(&identifiers))
-        .await?;
+    let mut order = account.new_order(&NewOrder::new(&identifiers)).await?;
     eprintln!("[bountynet/acme] Order created");
 
     // Step 3: Process authorizations
@@ -95,10 +93,7 @@ pub async fn provision_cert_for_enclave(
         // Install challenge cert into enclave (with acme-tls/1 ALPN)
         let install_url = format!("{enclave_url}/acme-challenge");
         eprintln!("[bountynet/acme] Installing challenge cert into enclave...");
-        let resp = http.post(&install_url)
-            .body(challenge_pem)
-            .send()
-            .await?;
+        let resp = http.post(&install_url).body(challenge_pem).send().await?;
         if !resp.status().is_success() {
             anyhow::bail!("Failed to install challenge cert: {}", resp.text().await?);
         }
@@ -124,10 +119,7 @@ pub async fn provision_cert_for_enclave(
     // Step 6: Install real cert into enclave
     let real_pem = format!("{cert_chain_pem}\n{private_key_pem}");
     let install_url = format!("{enclave_url}/tls-cert");
-    let resp = http.post(&install_url)
-        .body(real_pem)
-        .send()
-        .await?;
+    let resp = http.post(&install_url).body(real_pem).send().await?;
     if !resp.status().is_success() {
         anyhow::bail!("Failed to install real cert: {}", resp.text().await?);
     }

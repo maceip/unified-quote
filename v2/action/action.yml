@@ -46,17 +46,25 @@ runs:
     - name: Attested build
       shell: bash
       id: build
+      env:
+        BOUNTYNET_SOURCE: ${{ inputs.source }}
+        BOUNTYNET_CMD: ${{ inputs.cmd }}
+        BOUNTYNET_OUTPUT: ${{ inputs.output }}
       run: |
-        OUTPUT="${{ inputs.output }}"
+        set -euo pipefail
+
+        OUTPUT="$BOUNTYNET_OUTPUT"
         mkdir -p "$OUTPUT"
 
-        ARGS="build ${{ inputs.source }} --output $OUTPUT"
-        if [ -n "${{ inputs.cmd }}" ]; then
-          ARGS="$ARGS --cmd \"${{ inputs.cmd }}\""
+        ARGS=(build "$BOUNTYNET_SOURCE" --output "$OUTPUT")
+        if [ -n "$BOUNTYNET_CMD" ]; then
+          ARGS+=(--cmd "$BOUNTYNET_CMD")
         fi
 
-        echo "Running: bountynet $ARGS"
-        eval bountynet $ARGS
+        printf 'Running: bountynet'
+        printf ' %q' "${ARGS[@]}"
+        printf '\n'
+        bountynet "${ARGS[@]}"
 
         # Parse attestation for outputs
         if [ -f "$OUTPUT/attestation.json" ]; then

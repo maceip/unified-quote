@@ -127,7 +127,9 @@ fn cmd_proxy(args: &[String]) -> anyhow::Result<()> {
     let cid = cid.ok_or_else(|| anyhow::anyhow!("--cid <enclave-cid> required"))?;
 
     eprintln!("[bountynet] Proxy: TCP:{port} → enclave CID {cid}");
-    eprintln!("[bountynet] TLS terminates inside the enclave. This proxy only sees encrypted bytes.");
+    eprintln!(
+        "[bountynet] TLS terminates inside the enclave. This proxy only sees encrypted bytes."
+    );
 
     if acme {
         let proxy_port = port;
@@ -185,11 +187,9 @@ fn cmd_proxy(args: &[String]) -> anyhow::Result<()> {
 
                 eprintln!("[bountynet/acme] Domain: {domain}");
 
-                match net::acme::provision_cert_for_enclave(
-                    &domain,
-                    &enclave_url,
-                    acme_staging,
-                ).await {
+                match net::acme::provision_cert_for_enclave(&domain, &enclave_url, acme_staging)
+                    .await
+                {
                     Ok(()) => {
                         eprintln!("[bountynet/acme] === ACME COMPLETE ===");
                         eprintln!("[bountynet/acme] https://{domain} is now valid TLS");
@@ -286,7 +286,9 @@ fn cmd_build(args: &[String]) -> anyhow::Result<()> {
     std::fs::create_dir_all(&dep_cache)?;
 
     let is_cargo = frozen_source.join("Cargo.toml").exists();
-    let cmd = build_cmd.clone().unwrap_or_else(|| detect_build_cmd(&frozen_source));
+    let cmd = build_cmd
+        .clone()
+        .unwrap_or_else(|| detect_build_cmd(&frozen_source));
     let custom_cmd = build_cmd.is_some();
 
     if is_cargo && !custom_cmd {
@@ -408,11 +410,10 @@ fn cmd_build(args: &[String]) -> anyhow::Result<()> {
     report_data[..32].copy_from_slice(&binding);
     report_data[32..64].copy_from_slice(&value_x[..32]);
 
-    // NitroTPM linking: on SNP, collect NitroTPM attestation for kernel
-    // measurement. Currently the TPM digest is recorded in the attestation
-    // output but NOT mixed into `binding` (the EAT schema doesn't have a
-    // dedicated field for it yet). Follow-up: add `tpm_digest: Option<[u8;32]>`
-    // to EatToken and include it in binding_bytes.
+    // NitroTPM side evidence: on AWS SNP, collect NitroTPM attestation for
+    // kernel measurement. This is recorded next to the EAT but is not yet
+    // mixed into `binding`; verifiers must treat it as auxiliary evidence
+    // until the EAT schema grows a TPM digest field.
     let tpm_attestation: Option<tee::tpm::TpmAttestation> =
         if tee_provider.platform() == quote::Platform::SevSnp && tee::tpm::tpm_available() {
             match tee::tpm::collect_tpm_attestation(&binding) {
@@ -444,10 +445,8 @@ fn cmd_build(args: &[String]) -> anyhow::Result<()> {
     // --- Step 7: Extract platform measurement + fill the EAT ---
     // LATTE L1: the platform measurement is a top-level field, not buried in bytes.
     // This is what the verifier checks to confirm the builder code is genuine.
-    let platform_measurement = extract_platform_measurement(
-        &evidence.raw_quote,
-        &evidence.platform,
-    );
+    let platform_measurement =
+        extract_platform_measurement(&evidence.raw_quote, &evidence.platform);
     if let Some(ref m) = platform_measurement {
         eprintln!("[bountynet] Platform measurement: {}", hex::encode(m));
     } else {
@@ -460,11 +459,9 @@ fn cmd_build(args: &[String]) -> anyhow::Result<()> {
     eat.platform = eat::platform_to_u8(evidence.platform);
     eat.platform_quote = evidence.raw_quote.clone();
     eat.platform_measurement = platform_measurement.clone().unwrap_or_default();
-    debug_assert_eq!(
-        eat.binding_bytes(),
-        binding,
-        "cmd_build: EAT binding changed after filling quote — schema bug"
-    );
+    if eat.binding_bytes() != binding {
+        anyhow::bail!("cmd_build: EAT binding changed after filling quote — schema bug");
+    }
 
     // --- Step 8: Write output ---
     std::fs::create_dir_all(&output_dir)?;
@@ -536,7 +533,7 @@ fn cmd_build(args: &[String]) -> anyhow::Result<()> {
             "method": att.method,
             "digest": hex::encode(att.digest),
             "pcrs": pcr_map,
-            "note": "digest is bound into SNP REPORT_DATA via the binding hash"
+            "note": "auxiliary kernel-measurement evidence; not yet mixed into EAT binding_bytes"
         });
         if let Some(ref doc) = att.attestation_doc {
             obj["attestation_document_b64"] = serde_json::Value::String(
@@ -614,7 +611,9 @@ fn cmd_build(args: &[String]) -> anyhow::Result<()> {
     if log_committed {
         eprintln!("[bountynet] Transparency log: attestation committed to git");
     } else {
-        eprintln!("[bountynet] Transparency log: no git repo found (attestation written to disk only)");
+        eprintln!(
+            "[bountynet] Transparency log: no git repo found (attestation written to disk only)"
+        );
     }
 
     eprintln!();
@@ -659,7 +658,9 @@ fn cmd_build(args: &[String]) -> anyhow::Result<()> {
 /// Every step is required. A verifier that skips (6) is running
 /// "attestation over TLS," which doesn't defend against relay / MITM.
 fn cmd_check(args: &[String]) -> anyhow::Result<()> {
-    let url = args.iter().find(|a| !a.starts_with("--"))
+    let url = args
+        .iter()
+        .find(|a| !a.starts_with("--"))
         .ok_or_else(|| anyhow::anyhow!("Usage: bountynet check https://<domain>"))?;
 
     // Parse out host + port
@@ -714,21 +715,23 @@ fn cmd_check(args: &[String]) -> anyhow::Result<()> {
     eprintln!("[bountynet] Leaf cert: {} bytes DER", leaf_der.len());
 
     // Extract the CMW extension
-    let eat_cbor = net::attested_tls::extract_eat_from_cert(&leaf_der)?
-        .ok_or_else(|| anyhow::anyhow!(
+    let eat_cbor = net::attested_tls::extract_eat_from_cert(&leaf_der)?.ok_or_else(|| {
+        anyhow::anyhow!(
             "cert has no CMW extension (OID 2.23.133.5.4.9) — \
              this endpoint is not attested-TLS aware"
-        ))?;
+        )
+    })?;
     eprintln!("[bountynet] EAT extension: {} bytes", eat_cbor.len());
 
     // Decode
-    let eat = eat::EatToken::from_cbor(&eat_cbor)
-        .map_err(|e| anyhow::anyhow!("EAT decode: {e}"))?;
+    let eat =
+        eat::EatToken::from_cbor(&eat_cbor).map_err(|e| anyhow::anyhow!("EAT decode: {e}"))?;
     eprintln!("[bountynet] EAT profile: {}", eat.eat_profile);
     eprintln!("[bountynet] Platform:    {:?}", eat.platform_enum());
     eprintln!("[bountynet] Value X:     {}", hex::encode(eat.value_x));
 
-    let platform = eat.platform_enum()
+    let platform = eat
+        .platform_enum()
         .ok_or_else(|| anyhow::anyhow!("unknown platform discriminant: {}", eat.platform))?;
 
     // --- Check: cert SPKI hash matches eat.tls_spki_hash ---
@@ -737,8 +740,14 @@ fn cmd_check(args: &[String]) -> anyhow::Result<()> {
     let actual_spki_hash = net::attested_tls::spki_hash_of_cert(&leaf_der)?;
     if actual_spki_hash != eat.tls_spki_hash {
         eprintln!("[bountynet] SPKI binding:    FAIL");
-        eprintln!("[bountynet]   eat claim:     {}", hex::encode(eat.tls_spki_hash));
-        eprintln!("[bountynet]   cert actual:   {}", hex::encode(actual_spki_hash));
+        eprintln!(
+            "[bountynet]   eat claim:     {}",
+            hex::encode(eat.tls_spki_hash)
+        );
+        eprintln!(
+            "[bountynet]   cert actual:   {}",
+            hex::encode(actual_spki_hash)
+        );
         anyhow::bail!("attested-TLS channel binding failed");
     }
     eprintln!("[bountynet] SPKI binding:    PASS");
@@ -790,7 +799,8 @@ fn cmd_check(args: &[String]) -> anyhow::Result<()> {
     if eat.has_previous() {
         let mut cursor = eat.clone();
         let mut depth = 1usize;
-        while let Some(prev) = cursor.decode_previous()
+        while let Some(prev) = cursor
+            .decode_previous()
             .map_err(|e| anyhow::anyhow!("decode previous: {e}"))?
         {
             eprintln!(
@@ -808,7 +818,8 @@ fn cmd_check(args: &[String]) -> anyhow::Result<()> {
             }
 
             // Verify previous's quote (binding + signature) in one call
-            let prev_platform = prev.platform_enum()
+            let prev_platform = prev
+                .platform_enum()
                 .ok_or_else(|| anyhow::anyhow!("chain step {depth}: unknown platform"))?;
             let prev_binding = prev.binding_bytes();
             match quote::verify::verify_platform_quote(
@@ -899,7 +910,11 @@ fn cmd_check(args: &[String]) -> anyhow::Result<()> {
     match registry::Registry::load_default() {
         Ok(reg) if !reg.is_empty() => {
             let lookup = reg.lookup(&value_x_hex);
-            eprintln!("[bountynet] Registry ({} entries): {}", reg.len(), registry::describe(&lookup));
+            eprintln!(
+                "[bountynet] Registry ({} entries): {}",
+                reg.len(),
+                registry::describe(&lookup)
+            );
         }
         Ok(_) => {
             eprintln!("[bountynet] Registry: empty (no entries loaded)");
@@ -996,10 +1011,9 @@ fn cmd_verify(args: &[String]) -> anyhow::Result<()> {
         i += 1;
     }
 
-    let path = att_path
-        .ok_or_else(|| anyhow::anyhow!("Usage: bountynet verify <attestation.json>"))?;
-    let att_json: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    let path =
+        att_path.ok_or_else(|| anyhow::anyhow!("Usage: bountynet verify <attestation.json>"))?;
+    let att_json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
 
     verify_attestation_json(&att_json, source_dir.as_deref(), artifact_path.as_deref())
 }
@@ -1009,7 +1023,6 @@ fn verify_attestation_json(
     source_dir: Option<&Path>,
     artifact_path: Option<&Path>,
 ) -> anyhow::Result<()> {
-
     let platform_str = att_json["platform"].as_str().unwrap_or("");
     let ct_hex = att_json["source_hash"].as_str().unwrap_or("");
     let a_hex = att_json["artifact_hash"].as_str().unwrap_or("");
@@ -1085,7 +1098,9 @@ fn verify_attestation_json(
         }
     } else {
         eprintln!("[bountynet] Platform measurement: NOT PRESENT in attestation");
-        eprintln!("[bountynet] WARNING: cannot verify builder identity without platform measurement");
+        eprintln!(
+            "[bountynet] WARNING: cannot verify builder identity without platform measurement"
+        );
     }
 
     // Check 4: Verify TEE quote signature chain
@@ -1122,7 +1137,10 @@ fn verify_attestation_json(
 
     // Check 5: Optionally verify CT against source
     if let Some(dir) = source_dir {
-        eprintln!("[bountynet] Verifying source hash against {}", dir.display());
+        eprintln!(
+            "[bountynet] Verifying source hash against {}",
+            dir.display()
+        );
         let local_ct = compute_tree_hash(dir)?;
         if hex::encode(local_ct) == ct_hex {
             eprintln!("[bountynet] Source hash: PASS — matches attestation");
@@ -1136,7 +1154,10 @@ fn verify_attestation_json(
 
     // Check 6: Optionally verify A against artifact
     if let Some(path) = artifact_path {
-        eprintln!("[bountynet] Verifying artifact hash against {}", path.display());
+        eprintln!(
+            "[bountynet] Verifying artifact hash against {}",
+            path.display()
+        );
         let bytes = std::fs::read(path)?;
         let local_a = hex::encode(Sha384::digest(&bytes));
         if local_a == a_hex {
@@ -1155,7 +1176,11 @@ fn verify_attestation_json(
     match registry::Registry::load_default() {
         Ok(reg) if !reg.is_empty() => {
             let lookup = reg.lookup(x_hex);
-            eprintln!("[bountynet] Registry ({} entries): {}", reg.len(), registry::describe(&lookup));
+            eprintln!(
+                "[bountynet] Registry ({} entries): {}",
+                reg.len(),
+                registry::describe(&lookup)
+            );
         }
         Ok(_) => {
             eprintln!("[bountynet] Registry: empty (no entries loaded)");
@@ -1221,8 +1246,8 @@ async fn cmd_run(args: &[String]) -> anyhow::Result<()> {
     }
 
     let work_dir = work_dir.ok_or_else(|| anyhow::anyhow!("working directory required"))?;
-    let stage0_path = stage0_path
-        .ok_or_else(|| anyhow::anyhow!("--attestation <stage0.cbor> required"))?;
+    let stage0_path =
+        stage0_path.ok_or_else(|| anyhow::anyhow!("--attestation <stage0.cbor> required"))?;
 
     // --- Step 1: confirm we're running inside a TEE ---
     eprintln!("[bountynet] === Stage 1: Attested Runtime ===");
@@ -1266,9 +1291,7 @@ async fn cmd_run(args: &[String]) -> anyhow::Result<()> {
             }
         }
         Err(e) => {
-            anyhow::bail!(
-                "Stage 1 refuses to boot: stage 0 quote verification failed — {e}"
-            );
+            anyhow::bail!("Stage 1 refuses to boot: stage 0 quote verification failed — {e}");
         }
     }
 
@@ -1319,19 +1342,17 @@ async fn cmd_run(args: &[String]) -> anyhow::Result<()> {
         evidence.platform
     );
 
-    let s1_measurement = extract_platform_measurement(&evidence.raw_quote, &evidence.platform)
-        .unwrap_or_default();
+    let s1_measurement =
+        extract_platform_measurement(&evidence.raw_quote, &evidence.platform).unwrap_or_default();
     stage1.platform_measurement = s1_measurement;
     stage1.platform_quote = evidence.raw_quote.clone();
 
     // Invariant: the binding we committed to BEFORE collecting the
     // quote MUST equal the binding of the filled EAT. If this fires,
     // there's a bug in binding_bytes that breaks the chain.
-    debug_assert_eq!(
-        stage1.binding_bytes(),
-        binding,
-        "stage 1 binding changed after filling quote/measurement"
-    );
+    if stage1.binding_bytes() != binding {
+        anyhow::bail!("stage 1 binding changed after filling quote/measurement");
+    }
 
     let stage1_cbor = stage1
         .to_cbor()
@@ -1497,7 +1518,10 @@ fn cmd_enclave(args: &[String]) -> anyhow::Result<()> {
     eprintln!("[bountynet] Generating attested-TLS keypair inside enclave");
     let tls_kp = net::attested_tls::generate_keypair()?;
     let tls_spki_hash = net::attested_tls::spki_hash_of(&tls_kp);
-    eprintln!("[bountynet] TLS SPKI sha256: {}", hex::encode(tls_spki_hash));
+    eprintln!(
+        "[bountynet] TLS SPKI sha256: {}",
+        hex::encode(tls_spki_hash)
+    );
 
     // Provisional EAT: same fields as the final one EXCEPT
     // platform_quote is empty. binding_bytes() is defined to exclude
@@ -1526,13 +1550,15 @@ fn cmd_enclave(args: &[String]) -> anyhow::Result<()> {
     report_data[32..64].copy_from_slice(&value_x[..32]);
 
     let evidence = tee_provider.collect_evidence(&report_data)?;
-    eprintln!("[bountynet] Quote: {} bytes from {:?}", evidence.raw_quote.len(), evidence.platform);
+    eprintln!(
+        "[bountynet] Quote: {} bytes from {:?}",
+        evidence.raw_quote.len(),
+        evidence.platform
+    );
 
     // Finalize the EAT with the collected quote + measurement
-    let platform_measurement = extract_platform_measurement(
-        &evidence.raw_quote,
-        &evidence.platform,
-    ).unwrap_or_default();
+    let platform_measurement =
+        extract_platform_measurement(&evidence.raw_quote, &evidence.platform).unwrap_or_default();
     let mut eat = eat_partial;
     eat.platform_measurement = platform_measurement;
     eat.platform_quote = evidence.raw_quote.clone();
@@ -1541,11 +1567,11 @@ fn cmd_enclave(args: &[String]) -> anyhow::Result<()> {
     // assignment, because binding_bytes excludes platform_quote AND
     // platform_measurement. If this ever fires, the EAT schema has
     // drifted in a way that breaks channel binding.
-    debug_assert_eq!(
-        eat.binding_bytes(),
-        binding,
-        "attested-TLS binding invariant violated: binding_bytes changed after finalization"
-    );
+    if eat.binding_bytes() != binding {
+        anyhow::bail!(
+            "attested-TLS binding invariant violated: binding_bytes changed after finalization"
+        );
+    }
 
     // NOTE: platform_measurement is NOT in binding_bytes today, because
     // it's derivable from platform_quote by the verifier. If we ever
@@ -1558,7 +1584,7 @@ fn cmd_enclave(args: &[String]) -> anyhow::Result<()> {
     // Build KMS state — keeps NSM fd alive for fresh attestation generation.
     // KMS rejects attestation docs older than 5 minutes, so GET /kms-attestation
     // calls NSM again with the same RSA pubkey to get a fresh doc.
-    #[cfg(feature = "nitro")]
+    #[cfg(all(feature = "nitro", unix))]
     let kms_state: Option<Arc<net::vsock::KmsState>> = if kms_private_key.is_some() {
         // Extract RSA public key from the evidence (re-derive from private key)
         use rsa::pkcs8::DecodePrivateKey;
@@ -1566,7 +1592,11 @@ fn cmd_enclave(args: &[String]) -> anyhow::Result<()> {
         let rsa_priv = rsa::RsaPrivateKey::from_pkcs8_der(kms_private_key.as_ref().unwrap())
             .expect("RSA privkey decode");
         let rsa_pub = rsa::RsaPublicKey::from(&rsa_priv);
-        let rsa_pub_der = rsa_pub.to_public_key_der().expect("RSA pubkey DER").as_bytes().to_vec();
+        let rsa_pub_der = rsa_pub
+            .to_public_key_der()
+            .expect("RSA pubkey DER")
+            .as_bytes()
+            .to_vec();
 
         // Move the tee_provider into KmsState (it holds the NSM fd)
         // We need it to be a NitroProvider specifically
@@ -1623,7 +1653,10 @@ fn cmd_enclave(args: &[String]) -> anyhow::Result<()> {
     // Serialize the FINAL EAT (with quote populated) to CBOR.
     // This is what goes into the CMW cert extension AND what /eat serves.
     let eat_cbor = eat.to_cbor()?;
-    eprintln!("[bountynet] EAT (CBOR): {} bytes — embedded in attested-TLS cert + served at /eat", eat_cbor.len());
+    eprintln!(
+        "[bountynet] EAT (CBOR): {} bytes — embedded in attested-TLS cert + served at /eat",
+        eat_cbor.len()
+    );
 
     eprintln!("[bountynet] === Enclave Ready ===");
     eprintln!("[bountynet] Value X: {}", hex::encode(value_x));
@@ -1646,13 +1679,10 @@ fn cmd_enclave(args: &[String]) -> anyhow::Result<()> {
                     "[bountynet] attested-TLS cert built ({} bytes DER, EAT extension marked critical)",
                     ac.cert_der.len()
                 );
-                net::tls::make_server_config(
-                    ac.cert_pem.as_bytes(),
-                    ac.key_pem.as_bytes(),
-                )?
+                net::tls::make_server_config(ac.cert_pem.as_bytes(), ac.key_pem.as_bytes())?
             };
             eprintln!("[bountynet] TLS on vsock (inside enclave)");
-            #[cfg(feature = "nitro")]
+            #[cfg(all(feature = "nitro", unix))]
             {
                 net::vsock::serve_tls_vsock(
                     Arc::new(tls_config),
@@ -1662,9 +1692,14 @@ fn cmd_enclave(args: &[String]) -> anyhow::Result<()> {
                     kms_state,
                 )?;
             }
-            #[cfg(not(feature = "nitro"))]
+            #[cfg(not(all(feature = "nitro", unix)))]
             {
-                net::vsock::serve_tls_vsock(Arc::new(tls_config), &attestation_json, &eat_cbor, kms_private_key)?;
+                net::vsock::serve_tls_vsock(
+                    Arc::new(tls_config),
+                    &attestation_json,
+                    &eat_cbor,
+                    kms_private_key,
+                )?;
             }
         }
         Err(_) => {
@@ -1700,8 +1735,8 @@ fn cmd_run_sync(args: &[String]) -> anyhow::Result<()> {
     }
 
     let work_dir = work_dir.ok_or_else(|| anyhow::anyhow!("working directory required"))?;
-    let attestation_path = attestation_path
-        .ok_or_else(|| anyhow::anyhow!("--attestation <path> required"))?;
+    let attestation_path =
+        attestation_path.ok_or_else(|| anyhow::anyhow!("--attestation <path> required"))?;
 
     eprintln!("[bountynet] Stage 1 (sync mode): self-verification");
 
@@ -1709,7 +1744,8 @@ fn cmd_run_sync(args: &[String]) -> anyhow::Result<()> {
     let att_contents = std::fs::read_to_string(&attestation_path)?;
     let att_json: serde_json::Value = serde_json::from_str(&att_contents)?;
 
-    let stage0_x = att_json["value_x"].as_str()
+    let stage0_x = att_json["value_x"]
+        .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing value_x"))?;
 
     eprintln!("[bountynet] Stage 0 Value X: {}", &stage0_x[..24]);
@@ -1737,7 +1773,10 @@ fn cmd_run_sync(args: &[String]) -> anyhow::Result<()> {
     // Serve via vsock (blocking)
     let domain = net::acme::domain_from_value_x(&current_x);
     eprintln!("[bountynet] Domain: {domain}");
-    eprintln!("[bountynet] Serving via vsock on port {}", net::vsock::VSOCK_PORT);
+    eprintln!(
+        "[bountynet] Serving via vsock on port {}",
+        net::vsock::VSOCK_PORT
+    );
 
     net::vsock::serve_vsock(&attestation_json)?;
 
@@ -1784,8 +1823,7 @@ fn cmd_merge(args: &[String]) -> anyhow::Result<()> {
     // Load all attestations
     let mut attestations: Vec<serde_json::Value> = Vec::new();
     for path in &att_paths {
-        let json: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(path)?)?;
+        let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
         attestations.push(json);
     }
 
@@ -1833,7 +1871,10 @@ fn cmd_merge(args: &[String]) -> anyhow::Result<()> {
             platform_quotes.insert(platform.to_string(), serde_json::json!(quote));
         }
         platforms_seen.push(platform.to_string());
-        eprintln!("[bountynet]   {platform}: measurement={}", &measurement[..32.min(measurement.len())]);
+        eprintln!(
+            "[bountynet]   {platform}: measurement={}",
+            &measurement[..32.min(measurement.len())]
+        );
     }
 
     let merged = serde_json::json!({
@@ -1997,14 +2038,24 @@ fn copy_dir_readonly(src: &Path, dst: &Path) -> anyhow::Result<()> {
         let name = entry.file_name();
         let name_str = name.to_str().unwrap_or("");
 
-        // Skip .git and build artifacts
-        if matches!(name_str, ".git" | "target" | "node_modules" | ".DS_Store") {
+        // Skip VCS state and generated artifacts that are excluded from Value X.
+        if value_x::SKIP_NAMES.contains(&name_str) {
             continue;
         }
 
-        if src_path.is_dir() {
+        let metadata = std::fs::symlink_metadata(&src_path)?;
+        let file_type = metadata.file_type();
+
+        if file_type.is_symlink() {
+            anyhow::bail!(
+                "source snapshot cannot include symlinks: {}",
+                src_path.display()
+            );
+        }
+
+        if file_type.is_dir() {
             copy_dir_readonly(&src_path, &dst_path)?;
-        } else if src_path.is_file() {
+        } else if file_type.is_file() {
             std::fs::copy(&src_path, &dst_path)?;
             // Make read-only
             let mut perms = std::fs::metadata(&dst_path)?.permissions();
@@ -2025,10 +2076,7 @@ fn copy_dir_readonly(src: &Path, dst: &Path) -> anyhow::Result<()> {
 /// TDX: MRTD (48 bytes at body offset 136)
 /// SNP: MEASUREMENT (48 bytes at offset 0x090)
 /// Nitro: PCR0 (from CBOR payload)
-fn extract_platform_measurement(
-    quote: &[u8],
-    platform: &quote::Platform,
-) -> Option<Vec<u8>> {
+fn extract_platform_measurement(quote: &[u8], platform: &quote::Platform) -> Option<Vec<u8>> {
     match platform {
         quote::Platform::Tdx => {
             if quote.len() >= 632 {
@@ -2059,14 +2107,20 @@ fn extract_platform_measurement(
                     };
                     if let Some(arr) = arr {
                         if let Some(serde_cbor::Value::Bytes(payload_bytes)) = arr.get(2) {
-                            if let Ok(serde_cbor::Value::Map(map)) = serde_cbor::from_slice(payload_bytes) {
+                            if let Ok(serde_cbor::Value::Map(map)) =
+                                serde_cbor::from_slice(payload_bytes)
+                            {
                                 for (k, v) in &map {
                                     if let serde_cbor::Value::Text(key) = k {
                                         if key == "pcrs" {
                                             if let serde_cbor::Value::Map(pcr_map) = v {
                                                 // PCR0
                                                 for (idx, val) in pcr_map {
-                                                    if let (serde_cbor::Value::Integer(0), serde_cbor::Value::Bytes(b)) = (idx, val) {
+                                                    if let (
+                                                        serde_cbor::Value::Integer(0),
+                                                        serde_cbor::Value::Bytes(b),
+                                                    ) = (idx, val)
+                                                    {
                                                         return Some(b.clone());
                                                     }
                                                 }

@@ -1,19 +1,24 @@
 # bountynet-genesis
 
-**A verifiable, universal build runner.** Proves the code running on a
-machine is the code in the repo — in hardware, across three TEE vendors,
-verifiable by anyone with the source. The chain is closed on itself: the
-runner that built this binary is itself an attested build of this repo.
+**A trust receipt for code, packages, and agents.** BountyNet proves the
+thing you are about to run, deploy, or hand secrets to is the code you
+think it is — in hardware, across three TEE vendors, verifiable by
+anyone with the source. The chain is closed on itself: the runner that
+built this binary is itself an attested build of this repo.
 
 ---
 
 ## The one question
 
-> **Is the code running on that machine the same code that's in the repo?**
+> **Is this live thing really the source it claims to be?**
 
 Not "probably." Not "we checked last Tuesday." Not "the cloud provider
 promises." A proof rooted in hardware that anyone can verify and nobody
 can argue with.
+
+That is the useful mass-market surface. Code signing says who published
+an artifact. BountyNet says what code is live before an AI agent gets a
+token, a package reaches production, or a secret leaves KMS.
 
 ---
 
@@ -125,6 +130,24 @@ and:
 
 This is Attestable Containers contribution #6 (build-to-runtime chain),
 which the paper explicitly left to the consumer.
+
+---
+
+## Why users should care
+
+The first useful product is not "better code signing." It is a verifier
+for trust decisions people already make:
+
+- **Before an AI agent gets credentials:** prove the running agent image
+  matches reviewed source and a pinned Value X.
+- **Before a package is promoted:** compare the normal CI artifact to a
+  hardware-rooted rebuild witness.
+- **Before a service receives secrets:** release them only to a runtime
+  whose attested TLS certificate chains back to the reviewed build.
+
+[`v2/SHADOW.md`](v2/SHADOW.md) is the planned no-TEE-required entry
+point: a GitHub Action submits a build bundle, an isolated TDX VM
+rebuilds it, and the workflow gets back `shadow-attestation.cbor`.
 
 ---
 

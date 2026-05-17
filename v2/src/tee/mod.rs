@@ -7,11 +7,11 @@
 pub mod detect;
 #[cfg(feature = "sev-snp")]
 pub mod kds;
-#[cfg(feature = "nitro")]
+#[cfg(all(feature = "nitro", unix))]
 pub mod nitro;
-#[cfg(feature = "sev-snp")]
+#[cfg(all(feature = "sev-snp", unix))]
 pub mod snp;
-#[cfg(feature = "tdx")]
+#[cfg(all(feature = "tdx", unix))]
 pub mod tdx;
 pub mod tpm;
 
@@ -47,7 +47,11 @@ pub enum TeeError {
     #[error("TEE device not available: {0}")]
     DeviceNotFound(String),
     #[error("ioctl failed: {0}")]
+    #[cfg(unix)]
     Ioctl(#[from] nix::Error),
+    #[error("ioctl failed: {0}")]
+    #[cfg(not(unix))]
+    Ioctl(String),
     #[error("invalid response from TEE: {0}")]
     InvalidResponse(String),
     #[error("no TEE detected on this platform")]

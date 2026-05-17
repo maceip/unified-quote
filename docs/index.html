@@ -48,13 +48,13 @@
                                                     // genesis 2026
 </pre>
 
-<h1>Trust is a hardware constraint.</h1>
+<h1>Prove the live thing before you trust it.</h1>
 
 <p>
-BountyNet Genesis binds code identity to silicon through a hash the CPU
-vendor signs. Modify the code — the measurement changes. Re-attest — the
-signature still verifies, but the claim no longer matches what anyone
-expected. <strong>The proof survives; the lie doesn't.</strong>
+BountyNet Genesis gives code, packages, and AI agents a hardware-rooted
+trust receipt. Before a service receives secrets or a workflow promotes
+an artifact, a verifier can check that the running thing is the source
+it claims to be. <strong>The proof survives; the lie doesn't.</strong>
 </p>
 
 <p>
@@ -118,8 +118,8 @@ no secrets, no cloud-provider middle-man.
 </tr>
 <tr>
   <td>regression gate</td>
-  <td class="ok">65/65</td>
-  <td>7 tests run real hardware bytes through <code>verify_platform_quote</code> on every commit</td>
+  <td class="ok">TEE FIXTURES</td>
+  <td>real hardware bytes flow through <code>verify_platform_quote</code>; Unix-only device modules are gated for local verifier builds</td>
 </tr>
 </table>
 
@@ -157,7 +157,7 @@ haven't yet ported to WASM). For the full platform check, run
 in section 2 below.
 </p>
 
-<h2 class="inline-h">live lineage // archive &amp; current head</h2>
+<h2 class="inline-h">lineage // archive &amp; live endpoint</h2>
 
 <div class="vx-lineage">
   <div class="vx-chip">
@@ -167,7 +167,7 @@ in section 2 below.
   </div>
   <div class="vx-arrow">&darr;</div>
   <div class="vx-chip vx-chip-live">
-    <span class="vx-label"><span class="live-dot"></span>live // commit 8dd008e (current main)</span>
+    <span class="vx-label"><span class="live-dot"></span>live endpoint // deployed commit 8dd008e</span>
     <code class="vx-hex" id="vx-live">f44f87e6f0965493ac6822dd89b155cb82758d6898751196f7892d12684fc49594fa3a8d7dc548d8496fe17597a32c20</code>
     <button class="vx-copy" data-copy-target="vx-live" aria-label="copy live Value X">copy</button>
   </div>
@@ -177,11 +177,11 @@ in section 2 below.
 Both values are real. The archive is the Value X the ouroboros CI run
 produced at commit <code>2593db6</code>, signed by Intel's TDX module and
 committed byte-identically at <code>v2/testdata/chain/tdx_ouroboros.cbor</code>.
-The live value is what the endpoint at <code>https://34.45.143.81/</code>
-serves right now — different bytes because the tree advanced when
+The live endpoint value is what <code>https://34.45.143.81/</code>
+served at the last deployed snapshot — different bytes because the tree advanced when
 <code>tdx_ouroboros.cbor</code> was added to <code>v2/testdata/chain/</code>.
 Same chain, same pinned root CA, two different commits. The widget
-reproduces either one; the live endpoint serves the current one.
+reproduces either one; a fresh deployment will publish the next Value X.
 </p>
 
 <h2 class="inline-h">compute it in your browser</h2>
@@ -609,10 +609,11 @@ single repository.
 </p>
 
 <p class="small">
-<strong>Follow-up: shadow attestation service</strong> — a narrow,
-single-purpose endpoint that accepts a source tarball and returns a
-bountynet-signed shadow EAT, zero TEE required on the client side. Tracked,
-not yet built. See DESIGN.md.
+<strong>Next product: shadow attestation</strong> — a GitHub Action that
+submits the checked-out workspace to an isolated TDX rebuild service and
+returns a shadow EAT, zero TEE required on the client side. This is the
+mass-market path: prove a package, service, or AI agent before it gets
+promoted or handed secrets. See <code>v2/SHADOW.md</code>.
 </p>
 
       </div>

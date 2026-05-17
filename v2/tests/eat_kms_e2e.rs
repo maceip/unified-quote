@@ -44,10 +44,8 @@ use std::fs;
 /// Load a testdata JSON blob by name.
 fn load(name: &str) -> Value {
     let path = format!("testdata/{}", name);
-    let body = fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
-    serde_json::from_str(&body)
-        .unwrap_or_else(|e| panic!("invalid json in {path}: {e}"))
+    let body = fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+    serde_json::from_str(&body).unwrap_or_else(|e| panic!("invalid json in {path}: {e}"))
 }
 
 /// Shared assertions every platform's EAT must satisfy.
@@ -76,8 +74,7 @@ fn assert_roundtrip(eat: &EatToken) {
 #[test]
 fn snp_testdata_wraps_into_eat_and_roundtrips() {
     let d = load("snp_attestation.json");
-    let raw_quote = hex::decode(d["attestation_report"].as_str().unwrap())
-        .expect("valid hex");
+    let raw_quote = hex::decode(d["attestation_report"].as_str().unwrap()).expect("valid hex");
 
     // SNP MEASUREMENT lives at offset 0x090 in the report, 48 bytes.
     let measurement = raw_quote[0x090..0x090 + 48].to_vec();
@@ -118,8 +115,7 @@ fn snp_testdata_wraps_into_eat_and_roundtrips() {
 #[test]
 fn tdx_testdata_wraps_into_eat_and_roundtrips() {
     let d = load("tdx_attestation.json");
-    let raw_quote = hex::decode(d["raw_quote_hex"].as_str().unwrap())
-        .expect("valid hex");
+    let raw_quote = hex::decode(d["raw_quote_hex"].as_str().unwrap()).expect("valid hex");
 
     // TDX MRTD is at offset 0x210 in a DCAP v4 quote, 48 bytes.
     let measurement = raw_quote[0x210..0x210 + 48].to_vec();

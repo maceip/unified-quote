@@ -267,25 +267,28 @@ the payload, and document that the flow itself is industry convention.
    (non-critical per rustls trade-off) — **done**.
 4. Attested-TLS verifier in `bountynet check`: cert → extension → EAT
    → quote → SPKI binding → registry lookup — **done**.
-5. SCT / CT verification on the LE path.
-6. Boot-time ACME re-provision (verify we're not caching across
+5. Source identity hardening: symlinks rejected, path separators
+   canonicalized, and binding-invariant checks fail closed — **done**.
+6. SCT / CT verification on the LE path.
+7. Boot-time ACME re-provision (verify we're not caching across
    reboots, which would break the CT property).
-7. Sigstore bundle verifier (hand-rolled, for registry entry sidecars).
-8. `registry-sign` GitHub workflow (first consumer of the signing path).
-9. Dual-cert wiring: LE cert and self-signed attested-TLS cert both
+8. Sigstore bundle verifier (hand-rolled, for registry entry sidecars).
+9. Registry update workflow that consumes the ouroboros attestation
+   artifact — **done, unsigned entries remain informational only**.
+10. Dual-cert wiring: LE cert and self-signed attested-TLS cert both
    served from the enclave, selected by SNI / ALPN.
-10. `bountynet-gate` extraction: pull the policy evaluator out of
+11. `bountynet-gate` extraction: pull the policy evaluator out of
     `cmd_enclave` into a standalone module with a business-card API.
-11. Stage 0 output migration: stage 0 produces a CMW-wrapped EAT too, so
-    the wire format is uniform end-to-end.
-12. DCAP collateral layer: QE Identity + TCB Info + CRL + `nextUpdate`
+12. Stage 0 output migration: stage 0 produces CBOR EAT alongside
+    JSON, so the verifier has one canonical proof format — **done**.
+13. DCAP collateral layer: QE Identity + TCB Info + CRL + `nextUpdate`
     freshness. Matches Intel attestation service quality. AMD KDS VCEK
     fetch is already done; the missing pieces are collateral policy
     checks inside `verify_platform_quote`.
-13. Runtime TOCTOU fields in EAT: wire `heartbeat_seq` (monotonic
+14. Runtime TOCTOU fields in EAT: wire `heartbeat_seq` (monotonic
     counter, gaps are suspicious) and `integrity_ok` (runtime integrity
     monitor status) into the claim set in `src/eat.rs`.
-14. Shadow attestation service (`SHADOW.md`): public `/shadow-build`
+15. Shadow attestation service (`SHADOW.md`): public `/shadow-build`
     endpoint (v1 accessed via a GitHub Action shim,
     `maceip/bountynet-shadow@v1`) where a build bundle is submitted,
     an isolated ephemeral TDX VM rebuilds it, and a

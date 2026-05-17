@@ -104,6 +104,9 @@ def __init__(
     signer: address = ecrecover(eth_hash, convert(sig_v, uint256), convert(sig_r, uint256), convert(sig_s, uint256))
     assert signer == tee_address, "registration signature invalid"
     assert signer != empty(address), "zero signer"
+    assert nonce != empty(bytes32), "empty nonce"
+    assert timestamp + 300 >= block.timestamp, "registration too old"
+    assert timestamp <= block.timestamp + 60, "registration from future"
 
     # Store TEE identity
     self.registered_value_x_high = value_x_high
@@ -143,9 +146,11 @@ def _verify_tee_action(
     """
     assert self.is_initialized, "not initialized"
     assert not self.used_nonces[nonce], "nonce already used"
+    assert nonce != empty(bytes32), "empty nonce"
 
     # Staleness: timestamp must be within 5 minutes
     assert timestamp + 300 >= block.timestamp, "attestation too old"
+    assert timestamp <= block.timestamp + 60, "attestation from future"
 
     # Build the signed message
     msg_hash: bytes32 = keccak256(

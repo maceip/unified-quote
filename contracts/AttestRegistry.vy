@@ -51,6 +51,9 @@ def register(
     @param pubkey       ed25519 pubkey of the TEE signing key
     """
     key: bytes32 = keccak256(concat(value_x_high, value_x_low, pubkey))
+    assert self.attestations[key].registered_at == 0, "already registered"
+    assert platform >= 1 and platform <= 3, "unknown platform"
+    assert pubkey != empty(bytes32), "empty pubkey"
 
     self.attestations[key] = Attestation(
         value_x_high=value_x_high,

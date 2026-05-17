@@ -63,10 +63,7 @@ pub fn verify_platform_quote(
 
 /// Verify that `subject` cert was signed by `issuer` cert using ECDSA-P384.
 #[cfg(feature = "sev-snp")]
-fn verify_cert_chain_p384(
-    issuer_der: &[u8],
-    subject_der: &[u8],
-) -> Result<bool, VerifyError> {
+fn verify_cert_chain_p384(issuer_der: &[u8], subject_der: &[u8]) -> Result<bool, VerifyError> {
     use der::{Decode, Encode};
     use p384::ecdsa::{self, signature::hazmat::PrehashVerifier};
     use sha2::Sha384;
@@ -103,10 +100,7 @@ fn verify_cert_chain_p384(
 
 /// Verify that `subject` cert was signed by `issuer` cert using ECDSA-P256.
 #[cfg(feature = "tdx")]
-fn verify_cert_chain_p256(
-    issuer_der: &[u8],
-    subject_der: &[u8],
-) -> Result<bool, VerifyError> {
+fn verify_cert_chain_p256(issuer_der: &[u8], subject_der: &[u8]) -> Result<bool, VerifyError> {
     use der::{Decode, Encode};
     use p256::ecdsa::{self, signature::hazmat::PrehashVerifier};
     use x509_cert::Certificate;
@@ -278,10 +272,14 @@ fn verify_nitro_quote(
         _ => false,
     };
     if !binding_ok {
-        let got = user_data.as_ref().map(|ud| hex::encode(&ud[..ud.len().min(32)])).unwrap_or_default();
+        let got = user_data
+            .as_ref()
+            .map(|ud| hex::encode(&ud[..ud.len().min(32)]))
+            .unwrap_or_default();
         return Err(VerifyError::PlatformError(format!(
             "Nitro: user_data binding mismatch\n  expected: {}\n  got:      {}",
-            hex::encode(expected_binding), got
+            hex::encode(expected_binding),
+            got
         )));
     }
 
@@ -353,10 +351,7 @@ fn verify_nitro_quote(
         verify_cert_chain_p384_nitro(&cab[0], &cab[0])?;
 
         // Pin root CA fingerprint
-        if !super::roots::verify_root_fingerprint(
-            &cab[0],
-            super::roots::AWS_NITRO_ROOT_SHA256,
-        ) {
+        if !super::roots::verify_root_fingerprint(&cab[0], super::roots::AWS_NITRO_ROOT_SHA256) {
             return Err(VerifyError::PlatformError(
                 "Nitro: root CA fingerprint does not match pinned AWS Nitro Root CA".into(),
             ));
@@ -375,10 +370,7 @@ fn verify_nitro_quote(
 
 /// Verify cert chain link for Nitro (ECDSA-P384 certs).
 #[cfg(feature = "nitro")]
-fn verify_cert_chain_p384_nitro(
-    issuer_der: &[u8],
-    subject_der: &[u8],
-) -> Result<(), VerifyError> {
+fn verify_cert_chain_p384_nitro(issuer_der: &[u8], subject_der: &[u8]) -> Result<(), VerifyError> {
     use der::{Decode, Encode};
     use p384::ecdsa::{self, signature::hazmat::PrehashVerifier};
     use sha2::Sha384;
@@ -439,7 +431,8 @@ fn verify_snp_quote(
     if raw_quote.len() < 0x318 {
         return Err(VerifyError::PlatformError(format!(
             "SNP report too short for signature verification: {} bytes (need >= {})",
-            raw_quote.len(), 0x318
+            raw_quote.len(),
+            0x318
         )));
     }
 
@@ -538,8 +531,9 @@ fn verify_snp_quote(
             // Verify VCEK → ASK → ARK chain if available
             if let (Some(ref ask), Some(ref ark)) = (&ask_der, &ark_der) {
                 verify_cert_chain_p384(ark, ark)?; // ARK is self-signed
-                // Pin AMD root fingerprint
-                let version = u32::from_le_bytes(raw_quote[0..4].try_into().expect("version bytes"));
+                                                   // Pin AMD root fingerprint
+                let version =
+                    u32::from_le_bytes(raw_quote[0..4].try_into().expect("version bytes"));
                 let expected_fp = if version >= 5 {
                     super::roots::AMD_ARK_GENOA_SHA256
                 } else {
@@ -595,16 +589,16 @@ fn parse_snp_cert_table(
 ) {
     // Known GUIDs for SNP cert table entries
     const VCEK_GUID: [u8; 16] = [
-        0x63, 0xda, 0x75, 0x8d, 0xe6, 0x64, 0x56, 0x45, 0xb4, 0x58, 0x73, 0x2a, 0x2b, 0x5d,
-        0xcc, 0xf7,
+        0x63, 0xda, 0x75, 0x8d, 0xe6, 0x64, 0x56, 0x45, 0xb4, 0x58, 0x73, 0x2a, 0x2b, 0x5d, 0xcc,
+        0xf7,
     ];
     const ASK_GUID: [u8; 16] = [
-        0x4a, 0xb7, 0xb3, 0x79, 0xbb, 0xac, 0x4f, 0xe4, 0xa0, 0x2f, 0x05, 0xae, 0xf3, 0x27,
-        0xc7, 0x82,
+        0x4a, 0xb7, 0xb3, 0x79, 0xbb, 0xac, 0x4f, 0xe4, 0xa0, 0x2f, 0x05, 0xae, 0xf3, 0x27, 0xc7,
+        0x82,
     ];
     const ARK_GUID: [u8; 16] = [
-        0xc0, 0xb4, 0x06, 0xa4, 0x43, 0x8f, 0x4a, 0xf3, 0xab, 0x09, 0xa6, 0xf2, 0xea, 0xb4,
-        0x43, 0x74,
+        0xc0, 0xb4, 0x06, 0xa4, 0x43, 0x8f, 0x4a, 0xf3, 0xab, 0x09, 0xa6, 0xf2, 0xea, 0xb4, 0x43,
+        0x74,
     ];
 
     // Cert table starts right after the 1184-byte report
@@ -718,8 +712,7 @@ fn verify_tdx_quote(
     }
 
     // --- Parse signature section ---
-    let sig_data_size =
-        u32::from_le_bytes(raw_quote[632..636].try_into().unwrap()) as usize;
+    let sig_data_size = u32::from_le_bytes(raw_quote[632..636].try_into().unwrap()) as usize;
     if raw_quote.len() < 636 + sig_data_size {
         return Err(VerifyError::PlatformError(
             "TDX: quote truncated in signature section".into(),
@@ -758,10 +751,8 @@ fn verify_tdx_quote(
     }
 
     // 4. Parse CertificationData at offset 128
-    let cert_data_type =
-        u16::from_le_bytes(sig_data[128..130].try_into().unwrap());
-    let cert_data_size =
-        u32::from_le_bytes(sig_data[130..134].try_into().unwrap()) as usize;
+    let cert_data_type = u16::from_le_bytes(sig_data[128..130].try_into().unwrap());
+    let cert_data_size = u32::from_le_bytes(sig_data[130..134].try_into().unwrap()) as usize;
 
     let mut qe_verified = false;
     let mut chain_verified = false;
@@ -775,8 +766,7 @@ fn verify_tdx_quote(
             // QE Report Signature (64 bytes)
             let qe_report_sig_bytes = &qe_cd[384..448];
             // QE Auth Data
-            let qe_auth_size =
-                u16::from_le_bytes(qe_cd[448..450].try_into().unwrap()) as usize;
+            let qe_auth_size = u16::from_le_bytes(qe_cd[448..450].try_into().unwrap()) as usize;
             let qe_auth = if qe_cd.len() >= 450 + qe_auth_size {
                 &qe_cd[450..450 + qe_auth_size]
             } else {
@@ -799,12 +789,11 @@ fn verify_tdx_quote(
             // 6. Parse inner CertificationData (cert chain)
             let inner_off = 450 + qe_auth_size;
             if qe_cd.len() >= inner_off + 6 {
-                let inner_type = u16::from_le_bytes(
-                    qe_cd[inner_off..inner_off + 2].try_into().unwrap(),
-                );
-                let inner_size = u32::from_le_bytes(
-                    qe_cd[inner_off + 2..inner_off + 6].try_into().unwrap(),
-                ) as usize;
+                let inner_type =
+                    u16::from_le_bytes(qe_cd[inner_off..inner_off + 2].try_into().unwrap());
+                let inner_size =
+                    u32::from_le_bytes(qe_cd[inner_off + 2..inner_off + 6].try_into().unwrap())
+                        as usize;
 
                 if inner_type == 5 && qe_cd.len() >= inner_off + 6 + inner_size {
                     let pem_data = &qe_cd[inner_off + 6..inner_off + 6 + inner_size];
@@ -830,9 +819,9 @@ fn verify_tdx_quote(
                             .subject_public_key
                             .raw_bytes();
                         let pck_vk =
-                            ecdsa::VerifyingKey::from_sec1_bytes(pck_pk_bytes).map_err(
-                                |e| VerifyError::PlatformError(format!("PCK P-256 key: {e}")),
-                            )?;
+                            ecdsa::VerifyingKey::from_sec1_bytes(pck_pk_bytes).map_err(|e| {
+                                VerifyError::PlatformError(format!("PCK P-256 key: {e}"))
+                            })?;
 
                         let qe_sig =
                             ecdsa::Signature::from_slice(qe_report_sig_bytes).map_err(|e| {
@@ -848,8 +837,7 @@ fn verify_tdx_quote(
                             // Verify each link
                             let mut chain_ok = true;
                             for i in (0..der_certs.len() - 1).rev() {
-                                if verify_cert_chain_p256(&der_certs[i + 1], &der_certs[i])
-                                    .is_err()
+                                if verify_cert_chain_p256(&der_certs[i + 1], &der_certs[i]).is_err()
                                 {
                                     chain_ok = false;
                                     break;
@@ -857,8 +845,7 @@ fn verify_tdx_quote(
                             }
                             // Verify root is self-signed
                             if chain_ok {
-                                chain_ok =
-                                    verify_cert_chain_p256(root_der, root_der).is_ok();
+                                chain_ok = verify_cert_chain_p256(root_der, root_der).is_ok();
                             }
                             // Pin Intel SGX Root CA fingerprint
                             if chain_ok {
@@ -905,7 +892,10 @@ fn verify_tdx_quote(
         ),
     ];
 
-    Ok((quote_sig_valid && qe_verified && chain_verified, measurements))
+    Ok((
+        quote_sig_valid && qe_verified && chain_verified,
+        measurements,
+    ))
 }
 
 /// Parse a PEM certificate chain string into a Vec of DER byte vectors.

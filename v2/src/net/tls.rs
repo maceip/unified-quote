@@ -5,8 +5,8 @@
 //! 2. Normal operation: present the Let's Encrypt cert, serve attestation JSON
 
 use anyhow::Result;
-use rustls::server::ServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use rustls::server::ServerConfig;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -28,10 +28,8 @@ impl TlsState {
         let params = rcgen::CertificateParams::new(vec![domain.to_string()])?;
         let cert = params.self_signed(&key_pair)?;
 
-        let config = make_server_config(
-            cert.pem().as_bytes(),
-            key_pair.serialize_pem().as_bytes(),
-        )?;
+        let config =
+            make_server_config(cert.pem().as_bytes(), key_pair.serialize_pem().as_bytes())?;
 
         Ok(Self {
             config: RwLock::new(Arc::new(config)),
@@ -137,8 +135,8 @@ pub async fn serve(state: Arc<TlsState>, port: u16) -> Result<()> {
 }
 
 pub fn make_server_config(cert_pem: &[u8], key_pem: &[u8]) -> Result<ServerConfig> {
-    let certs: Vec<CertificateDer> = rustls_pemfile::certs(&mut &*cert_pem)
-        .collect::<Result<Vec<_>, _>>()?;
+    let certs: Vec<CertificateDer> =
+        rustls_pemfile::certs(&mut &*cert_pem).collect::<Result<Vec<_>, _>>()?;
 
     let key = rustls_pemfile::private_key(&mut &*key_pem)?
         .ok_or_else(|| anyhow::anyhow!("no private key found in PEM"))?;
@@ -154,11 +152,11 @@ pub fn make_server_config(cert_pem: &[u8], key_pem: &[u8]) -> Result<ServerConfi
 /// Needed for ACME TLS-ALPN-01 challenge certs which have a critical
 /// acmeIdentifier extension that rustls doesn't understand.
 pub fn make_server_config_unchecked(cert_pem: &[u8], key_pem: &[u8]) -> Result<ServerConfig> {
-    use rustls::sign::CertifiedKey;
     use rustls::server::ResolvesServerCert;
+    use rustls::sign::CertifiedKey;
 
-    let certs: Vec<CertificateDer> = rustls_pemfile::certs(&mut &*cert_pem)
-        .collect::<Result<Vec<_>, _>>()?;
+    let certs: Vec<CertificateDer> =
+        rustls_pemfile::certs(&mut &*cert_pem).collect::<Result<Vec<_>, _>>()?;
 
     let key_der = rustls_pemfile::private_key(&mut &*key_pem)?
         .ok_or_else(|| anyhow::anyhow!("no private key found in PEM"))?;

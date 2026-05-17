@@ -18,8 +18,7 @@
 
 use bountynet::eat::{BuildComponents, EatToken};
 use bountynet::net::attested_tls::{
-    extract_eat_from_cert, generate_keypair, make_attested_cert, spki_hash_of,
-    spki_hash_of_cert,
+    extract_eat_from_cert, generate_keypair, make_attested_cert, spki_hash_of, spki_hash_of_cert,
 };
 use bountynet::quote::Platform;
 
@@ -131,9 +130,7 @@ fn swapping_cert_key_breaks_channel_binding() {
     let evil_cert = make_attested_cert(&attacker_kp, "evil.test.local", &eat_cbor).unwrap();
 
     // The attacker's cert successfully contains the EAT
-    let recovered = extract_eat_from_cert(&evil_cert.cert_der)
-        .unwrap()
-        .unwrap();
+    let recovered = extract_eat_from_cert(&evil_cert.cert_der).unwrap().unwrap();
     assert_eq!(recovered, eat_cbor);
 
     // But the SPKI hash check catches the swap

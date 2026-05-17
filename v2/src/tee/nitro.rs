@@ -56,8 +56,7 @@ impl NitroProvider {
             public_key: Some(ByteBuf::from(rsa_pub_der.to_vec())),
         };
 
-        let response =
-            aws_nitro_enclaves_nsm_api::driver::nsm_process_request(self.fd, request);
+        let response = aws_nitro_enclaves_nsm_api::driver::nsm_process_request(self.fd, request);
 
         match response {
             Response::Attestation { document } => Ok(document),
@@ -114,8 +113,7 @@ impl TeeProvider for NitroProvider {
             public_key: Some(ByteBuf::from(rsa_pub_der.as_bytes().to_vec())),
         };
 
-        let response =
-            aws_nitro_enclaves_nsm_api::driver::nsm_process_request(self.fd, request);
+        let response = aws_nitro_enclaves_nsm_api::driver::nsm_process_request(self.fd, request);
 
         match response {
             Response::Attestation { document } => {
@@ -201,8 +199,8 @@ pub fn kms_decrypt(private_key_der: &[u8], cms_bytes: &[u8]) -> Result<Vec<u8>, 
 
 /// Parsed components from a CMS EnvelopedData structure.
 struct CmsComponents {
-    encrypted_key: Vec<u8>,     // RSA-OAEP encrypted AES key (256 bytes for RSA-2048)
-    iv: Vec<u8>,                // AES-256-CBC IV (16 bytes)
+    encrypted_key: Vec<u8>, // RSA-OAEP encrypted AES key (256 bytes for RSA-2048)
+    iv: Vec<u8>,            // AES-256-CBC IV (16 bytes)
     encrypted_content: Vec<u8>, // AES-256-CBC encrypted plaintext
 }
 
@@ -239,13 +237,13 @@ fn parse_cms_enveloped_data(data: &[u8]) -> Result<CmsComponents, String> {
     // Find AES-256-CBC OID: 2.16.840.1.101.3.4.1.42
     // BER encoding: 06 09 60 86 48 01 65 03 04 01 2a
     let aes_cbc_oid = [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x01, 0x2a];
-    let oid_pos = find_subsequence(data, &aes_cbc_oid)
-        .ok_or("Cannot find AES-256-CBC OID in CMS")?;
+    let oid_pos =
+        find_subsequence(data, &aes_cbc_oid).ok_or("Cannot find AES-256-CBC OID in CMS")?;
 
     // IV is the OCTET STRING right after the OID
     let after_oid = oid_pos + aes_cbc_oid.len();
-    let iv = read_ber_octet_string(&data[after_oid..])
-        .ok_or("Cannot find IV after AES-256-CBC OID")?;
+    let iv =
+        read_ber_octet_string(&data[after_oid..]).ok_or("Cannot find IV after AES-256-CBC OID")?;
     if iv.len() != 16 {
         return Err(format!("Expected 16-byte IV, got {}", iv.len()));
     }
@@ -341,7 +339,11 @@ fn collect_indefinite_content(data: &[u8]) -> Option<Vec<u8>> {
         }
         pos += 1;
     }
-    if result.is_empty() { None } else { Some(result) }
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
 }
 
 /// Read a BER length field. Returns (length, number of bytes consumed).
@@ -386,7 +388,5 @@ fn read_ber_octet_string(data: &[u8]) -> Option<Vec<u8>> {
 
 /// Find a byte subsequence.
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    haystack.windows(needle.len()).position(|w| w == needle)
 }

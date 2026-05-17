@@ -91,10 +91,7 @@ pub fn fetch_cert_chain(product: &str) -> Result<(Vec<u8>, Vec<u8>), String> {
     // Parse PEM chain — contains ASK then ARK
     let certs = parse_pem_certs(&pem_str);
     if certs.len() < 2 {
-        return Err(format!(
-            "Expected 2 certs (ASK + ARK), got {}",
-            certs.len()
-        ));
+        return Err(format!("Expected 2 certs (ASK + ARK), got {}", certs.len()));
     }
 
     Ok((certs[0].clone(), certs[1].clone()))
@@ -109,11 +106,7 @@ pub fn extract_kds_params(report: &[u8]) -> Result<(String, Vec<u8>, u8, u8, u8,
     }
 
     // Version at offset 0x000 (4 bytes LE)
-    let version = u32::from_le_bytes(
-        report[0..4]
-            .try_into()
-            .map_err(|_| "version bytes")?,
-    );
+    let version = u32::from_le_bytes(report[0..4].try_into().map_err(|_| "version bytes")?);
     let product = match version {
         2 => "Milan",
         5 => "Genoa",

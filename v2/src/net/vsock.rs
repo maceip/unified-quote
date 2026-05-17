@@ -69,9 +69,7 @@ pub fn bridge_vsock_to_loopback(loopback_port: u16) -> Result<()> {
     eprintln!("[bountynet/vsock] Bridge listening: vsock:{VSOCK_PORT} → 127.0.0.1:{loopback_port}");
 
     loop {
-        let client_fd = unsafe {
-            libc::accept(fd, std::ptr::null_mut(), std::ptr::null_mut())
-        };
+        let client_fd = unsafe { libc::accept(fd, std::ptr::null_mut(), std::ptr::null_mut()) };
         if client_fd < 0 {
             eprintln!("[bountynet/vsock] Accept failed");
             continue;
@@ -120,9 +118,7 @@ pub fn serve_vsock(attestation_json: &str) -> Result<()> {
     eprintln!("[bountynet/vsock] Serving attestation on vsock port {VSOCK_PORT}");
 
     loop {
-        let client_fd = unsafe {
-            libc::accept(fd, std::ptr::null_mut(), std::ptr::null_mut())
-        };
+        let client_fd = unsafe { libc::accept(fd, std::ptr::null_mut(), std::ptr::null_mut()) };
         if client_fd < 0 {
             continue;
         }
@@ -143,7 +139,9 @@ pub fn serve_vsock(attestation_json: &str) -> Result<()> {
                     bytes.len() - written,
                 )
             };
-            if n <= 0 { break; }
+            if n <= 0 {
+                break;
+            }
             written += n as usize;
         }
         unsafe { libc::close(client_fd) };
@@ -177,15 +175,16 @@ pub fn serve_tls_vsock(
     #[cfg(feature = "nitro")]
     let kms_state_arc = kms_state;
     eprintln!("[bountynet/vsock] TLS+vsock listening on port {VSOCK_PORT}");
-    eprintln!("[bountynet/vsock] EAT endpoint: GET /eat ({} bytes)", eat_bytes.len());
+    eprintln!(
+        "[bountynet/vsock] EAT endpoint: GET /eat ({} bytes)",
+        eat_bytes.len()
+    );
     if kms_key.is_some() {
         eprintln!("[bountynet/vsock] KMS endpoints: GET /kms-attestation, POST /kms-unwrap");
     }
 
     loop {
-        let client_fd = unsafe {
-            libc::accept(fd, std::ptr::null_mut(), std::ptr::null_mut())
-        };
+        let client_fd = unsafe { libc::accept(fd, std::ptr::null_mut(), std::ptr::null_mut()) };
         if client_fd < 0 {
             eprintln!("[bountynet/vsock] Accept failed");
             continue;
@@ -241,8 +240,12 @@ pub fn serve_tls_vsock(
                 let so_far = &buf[..total];
                 if let Some(hdr_end) = so_far.windows(4).position(|w| w == b"\r\n\r\n") {
                     let hdr = String::from_utf8_lossy(&so_far[..hdr_end]);
-                    let content_len = hdr.lines()
-                        .find_map(|l| l.strip_prefix("Content-Length: ").or_else(|| l.strip_prefix("content-length: ")))
+                    let content_len = hdr
+                        .lines()
+                        .find_map(|l| {
+                            l.strip_prefix("Content-Length: ")
+                                .or_else(|| l.strip_prefix("content-length: "))
+                        })
                         .and_then(|v| v.trim().parse::<usize>().ok())
                         .unwrap_or(0);
                     let body_start = hdr_end + 4;
@@ -250,7 +253,9 @@ pub fn serve_tls_vsock(
                         break; // Got everything
                     }
                 }
-                if total >= buf.len() { break; }
+                if total >= buf.len() {
+                    break;
+                }
             }
             let request = String::from_utf8_lossy(&buf[..total]);
 
@@ -281,18 +286,10 @@ pub fn serve_tls_vsock(
 
             let response = match (method, path) {
                 #[cfg(feature = "nitro")]
-                ("GET", "/kms-attestation") => {
-                    handle_kms_attestation(&kms_st)
-                }
-                ("POST", "/kms-unwrap") => {
-                    handle_kms_unwrap(&request, &kms_key)
-                }
-                ("POST", "/tls-cert") => {
-                    handle_tls_cert_swap(&request, &live_cfg)
-                }
-                ("POST", "/acme-challenge") => {
-                    handle_acme_challenge(&request, &live_cfg)
-                }
+                ("GET", "/kms-attestation") => handle_kms_attestation(&kms_st),
+                ("POST", "/kms-unwrap") => handle_kms_unwrap(&request, &kms_key),
+                ("POST", "/tls-cert") => handle_tls_cert_swap(&request, &live_cfg),
+                ("POST", "/acme-challenge") => handle_acme_challenge(&request, &live_cfg),
                 _ => {
                     // Default: serve attestation JSON
                     format!(
@@ -302,7 +299,8 @@ pub fn serve_tls_vsock(
                          Access-Control-Allow-Origin: *\r\n\
                          \r\n\
                          {}",
-                        body.len(), body
+                        body.len(),
+                        body
                     )
                 }
             };
@@ -326,7 +324,10 @@ fn handle_kms_attestation(kms_state: &Option<std::sync::Arc<KmsState>>) -> Strin
         None => return http_response(400, "KMS state not available"),
     };
 
-    match state.nsm.fresh_attestation(&state.report_data, &state.rsa_pub_der) {
+    match state
+        .nsm
+        .fresh_attestation(&state.report_data, &state.rsa_pub_der)
+    {
         Ok(doc) => {
             use base64::Engine;
             let doc_b64 = base64::engine::general_purpose::STANDARD.encode(&doc);
@@ -338,7 +339,8 @@ fn handle_kms_attestation(kms_state: &Option<std::sync::Arc<KmsState>>) -> Strin
                  Content-Length: {}\r\n\
                  \r\n\
                  {}",
-                json.len(), json
+                json.len(),
+                json
             )
         }
         Err(e) => {
@@ -400,11 +402,10 @@ fn swap_tls_config(
         Ok(mut new_config) => {
             if acme_alpn {
                 // Accept both acme-tls/1 (for LE validation) and h2/http1.1 (for our own POST /tls-cert)
-                new_config.alpn_protocols = vec![
-                    b"acme-tls/1".to_vec(),
-                    b"http/1.1".to_vec(),
-                ];
-                eprintln!("[bountynet/vsock] ACME challenge cert installed (alpn: acme-tls/1 + http/1.1)");
+                new_config.alpn_protocols = vec![b"acme-tls/1".to_vec(), b"http/1.1".to_vec()];
+                eprintln!(
+                    "[bountynet/vsock] ACME challenge cert installed (alpn: acme-tls/1 + http/1.1)"
+                );
             } else {
                 eprintln!("[bountynet/vsock] TLS cert hot-swapped");
             }
@@ -454,7 +455,10 @@ fn handle_kms_unwrap(request: &str, kms_key: &Option<Vec<u8>>) -> String {
         match crate::tee::nitro::kms_decrypt(kms_key, &ciphertext) {
             Ok(plaintext) => {
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&plaintext);
-                eprintln!("[bountynet/vsock] KMS unwrap: {} bytes decrypted", plaintext.len());
+                eprintln!(
+                    "[bountynet/vsock] KMS unwrap: {} bytes decrypted",
+                    plaintext.len()
+                );
                 http_response(200, &b64)
             }
             Err(e) => {
@@ -482,7 +486,8 @@ fn http_response(status: u16, body: &str) -> String {
          Content-Length: {}\r\n\
          \r\n\
          {}",
-        body.len(), body
+        body.len(),
+        body
     )
 }
 
@@ -510,11 +515,12 @@ impl std::io::Write for VsockStream {
 // --- Internal helpers ---
 
 fn create_vsock_listener() -> Result<i32> {
-    let fd = unsafe {
-        libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM, 0)
-    };
+    let fd = unsafe { libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM, 0) };
     if fd < 0 {
-        anyhow::bail!("Failed to create vsock socket: {}", std::io::Error::last_os_error());
+        anyhow::bail!(
+            "Failed to create vsock socket: {}",
+            std::io::Error::last_os_error()
+        );
     }
 
     let mut addr: libc::sockaddr_vm = unsafe { std::mem::zeroed() };
@@ -535,7 +541,10 @@ fn create_vsock_listener() -> Result<i32> {
 
     let ret = unsafe { libc::listen(fd, 5) };
     if ret < 0 {
-        anyhow::bail!("Failed to listen on vsock: {}", std::io::Error::last_os_error());
+        anyhow::bail!(
+            "Failed to listen on vsock: {}",
+            std::io::Error::last_os_error()
+        );
     }
 
     Ok(fd)
@@ -559,7 +568,9 @@ fn pipe_vsock_to_tcp(vsock_fd: i32, loopback_port: u16) -> Result<()> {
                 Ok(0) | Err(_) => break,
                 Ok(n) => n,
             };
-            if tcp_write.write_all(&buf[..n]).is_err() { break; }
+            if tcp_write.write_all(&buf[..n]).is_err() {
+                break;
+            }
         }
     });
 
@@ -569,7 +580,9 @@ fn pipe_vsock_to_tcp(vsock_fd: i32, loopback_port: u16) -> Result<()> {
             Ok(0) | Err(_) => break,
             Ok(n) => n,
         };
-        if vsock_write.write_all(&buf[..n]).is_err() { break; }
+        if vsock_write.write_all(&buf[..n]).is_err() {
+            break;
+        }
     }
 
     let _ = handle.join();
@@ -580,9 +593,7 @@ use std::os::unix::io::FromRawFd;
 
 fn pipe_tcp_to_vsock(tcp: std::net::TcpStream, enclave_cid: u32) -> Result<()> {
     // Connect to enclave vsock
-    let vsock_fd = unsafe {
-        libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM, 0)
-    };
+    let vsock_fd = unsafe { libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM, 0) };
     if vsock_fd < 0 {
         anyhow::bail!("vsock socket failed");
     }
@@ -601,7 +612,10 @@ fn pipe_tcp_to_vsock(tcp: std::net::TcpStream, enclave_cid: u32) -> Result<()> {
     };
     if ret < 0 {
         unsafe { libc::close(vsock_fd) };
-        anyhow::bail!("vsock connect to CID {enclave_cid} failed: {}", std::io::Error::last_os_error());
+        anyhow::bail!(
+            "vsock connect to CID {enclave_cid} failed: {}",
+            std::io::Error::last_os_error()
+        );
     }
 
     let vsock_file = unsafe { std::fs::File::from_raw_fd(vsock_fd) };
@@ -619,7 +633,9 @@ fn pipe_tcp_to_vsock(tcp: std::net::TcpStream, enclave_cid: u32) -> Result<()> {
                 Ok(0) | Err(_) => break,
                 Ok(n) => n,
             };
-            if vsock_write.write_all(&buf[..n]).is_err() { break; }
+            if vsock_write.write_all(&buf[..n]).is_err() {
+                break;
+            }
         }
     });
 
@@ -629,7 +645,9 @@ fn pipe_tcp_to_vsock(tcp: std::net::TcpStream, enclave_cid: u32) -> Result<()> {
             Ok(0) | Err(_) => break,
             Ok(n) => n,
         };
-        if tcp_write.write_all(&buf[..n]).is_err() { break; }
+        if tcp_write.write_all(&buf[..n]).is_err() {
+            break;
+        }
     }
 
     let _ = handle.join();

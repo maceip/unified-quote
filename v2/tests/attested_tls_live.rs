@@ -20,8 +20,7 @@
 
 use bountynet::eat::{BuildComponents, EatToken};
 use bountynet::net::attested_tls::{
-    extract_eat_from_cert, generate_keypair, make_attested_cert, spki_hash_of,
-    spki_hash_of_cert,
+    extract_eat_from_cert, generate_keypair, make_attested_cert, spki_hash_of, spki_hash_of_cert,
 };
 use bountynet::quote::Platform;
 use std::io::{Read, Write};
@@ -120,8 +119,7 @@ fn client_recovers_eat_from_live_tls_handshake() {
     eat.platform_quote = fake_snp_quote_with_binding(&binding);
 
     let eat_cbor = eat.to_cbor().unwrap();
-    let cert_material =
-        make_attested_cert(&kp, "attested-tls.test.local", &eat_cbor).unwrap();
+    let cert_material = make_attested_cert(&kp, "attested-tls.test.local", &eat_cbor).unwrap();
 
     // --- spin up a TLS server on localhost ---
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -138,9 +136,8 @@ fn client_recovers_eat_from_live_tls_handshake() {
         // Drain whatever the client sent, write a canned response
         let mut buf = [0u8; 4096];
         let _ = tls.read(&mut buf);
-        let _ = tls.write_all(
-            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK",
-        );
+        let _ =
+            tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK");
         let _ = tls.conn.send_close_notify();
         let _ = tls.flush();
         drop(tls);
@@ -150,13 +147,14 @@ fn client_recovers_eat_from_live_tls_handshake() {
     // --- client side: connect, extract cert, run verification ---
     let cconfig = client_config();
     let server_name =
-        rustls::pki_types::ServerName::try_from("attested-tls.test.local".to_string())
-            .unwrap();
+        rustls::pki_types::ServerName::try_from("attested-tls.test.local".to_string()).unwrap();
     let mut conn = rustls::ClientConnection::new(cconfig, server_name).unwrap();
     let mut sock = TcpStream::connect(addr).unwrap();
     let mut tls = rustls::Stream::new(&mut conn, &mut sock);
 
-    let _ = tls.write_all(b"GET /eat HTTP/1.1\r\nHost: attested-tls.test.local\r\nConnection: close\r\n\r\n");
+    let _ = tls.write_all(
+        b"GET /eat HTTP/1.1\r\nHost: attested-tls.test.local\r\nConnection: close\r\n\r\n",
+    );
     let mut resp = Vec::new();
     let _ = tls.read_to_end(&mut resp);
 
@@ -166,9 +164,13 @@ fn client_recovers_eat_from_live_tls_handshake() {
     let leaf = &certs[0];
 
     // 1. Extract the EAT from the cert extension
-    let recovered_cbor =
-        extract_eat_from_cert(leaf.as_ref()).unwrap().expect("ext present");
-    assert_eq!(recovered_cbor, eat_cbor, "EAT survived TLS handshake intact");
+    let recovered_cbor = extract_eat_from_cert(leaf.as_ref())
+        .unwrap()
+        .expect("ext present");
+    assert_eq!(
+        recovered_cbor, eat_cbor,
+        "EAT survived TLS handshake intact"
+    );
 
     // 2. Decode
     let recovered = EatToken::from_cbor(&recovered_cbor).unwrap();

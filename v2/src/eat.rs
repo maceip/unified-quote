@@ -249,8 +249,7 @@ impl EatToken {
     /// embedding as an X.509 extension payload.
     pub fn to_cbor(&self) -> Result<Vec<u8>, EatError> {
         let mut out = Vec::new();
-        ciborium::ser::into_writer(self, &mut out)
-            .map_err(|e| EatError::Encode(e.to_string()))?;
+        ciborium::ser::into_writer(self, &mut out).map_err(|e| EatError::Encode(e.to_string()))?;
         Ok(out)
     }
 
@@ -259,8 +258,8 @@ impl EatToken {
     /// binding against report_data — those are the caller's job and live
     /// in the attested-TLS verifier.
     pub fn from_cbor(bytes: &[u8]) -> Result<Self, EatError> {
-        let token: Self = ciborium::de::from_reader(bytes)
-            .map_err(|e| EatError::Decode(e.to_string()))?;
+        let token: Self =
+            ciborium::de::from_reader(bytes).map_err(|e| EatError::Decode(e.to_string()))?;
         token.validate_shape()?;
         Ok(token)
     }
@@ -373,9 +372,9 @@ mod serde_bytes_32 {
     }
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 32], D::Error> {
         let v = <Vec<u8>>::deserialize(d)?;
-        v.as_slice().try_into().map_err(|_| {
-            serde::de::Error::invalid_length(v.len(), &"32-byte array")
-        })
+        v.as_slice()
+            .try_into()
+            .map_err(|_| serde::de::Error::invalid_length(v.len(), &"32-byte array"))
     }
     use serde::Serialize as _;
 }
@@ -388,9 +387,9 @@ mod serde_bytes_48 {
     }
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 48], D::Error> {
         let v = <Vec<u8>>::deserialize(d)?;
-        v.as_slice().try_into().map_err(|_| {
-            serde::de::Error::invalid_length(v.len(), &"48-byte array")
-        })
+        v.as_slice()
+            .try_into()
+            .map_err(|_| serde::de::Error::invalid_length(v.len(), &"48-byte array"))
     }
     use serde::Serialize as _;
 }

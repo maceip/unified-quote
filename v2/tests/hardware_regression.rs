@@ -36,35 +36,34 @@ use std::fs;
 
 fn load(name: &str) -> Vec<u8> {
     let path = format!("testdata/chain/{name}");
-    fs::read(&path)
-        .unwrap_or_else(|e| panic!("read {path}: {e}"))
+    fs::read(&path).unwrap_or_else(|e| panic!("read {path}: {e}"))
 }
 
 fn verify_full_path(cbor: &[u8], expected_platform: Platform) {
-    let eat = EatToken::from_cbor(cbor)
-        .unwrap_or_else(|e| panic!("decode EAT: {e}"));
+    let eat = EatToken::from_cbor(cbor).unwrap_or_else(|e| panic!("decode EAT: {e}"));
 
     assert_eq!(eat.platform_enum(), Some(expected_platform));
     assert!(!eat.value_x.iter().all(|b| *b == 0), "value_x is zeros");
     assert!(!eat.platform_quote.is_empty(), "platform_quote empty");
 
     let binding = eat.binding_bytes();
-    verify_platform_quote(expected_platform, &eat.platform_quote, &binding)
-        .unwrap_or_else(|e| {
-            panic!(
-                "verify_platform_quote failed for {:?}: {e}\n\
+    verify_platform_quote(expected_platform, &eat.platform_quote, &binding).unwrap_or_else(|e| {
+        panic!(
+            "verify_platform_quote failed for {:?}: {e}\n\
                  binding={}",
-                expected_platform,
-                hex::encode(binding)
-            )
-        });
+            expected_platform,
+            hex::encode(binding)
+        )
+    });
 }
 
+#[cfg(feature = "tdx")]
 #[test]
 fn tdx_stage0_verifies() {
     verify_full_path(&load("tdx_stage0.cbor"), Platform::Tdx);
 }
 
+#[cfg(feature = "tdx")]
 #[test]
 fn tdx_stage1_verifies_and_chains_to_stage0() {
     let cbor = load("tdx_stage1.cbor");
@@ -77,7 +76,10 @@ fn tdx_stage1_verifies_and_chains_to_stage0() {
 
     // Previous decodes and its binding matches the committed hash
     let prev = eat.decode_previous().unwrap().expect("stage 0");
-    assert_eq!(prev.value_x, eat.value_x, "Value X must be stable across chain");
+    assert_eq!(
+        prev.value_x, eat.value_x,
+        "Value X must be stable across chain"
+    );
     assert_eq!(prev.platform_enum(), Some(Platform::Tdx));
 
     // Previous verifies against its own binding
@@ -85,12 +87,19 @@ fn tdx_stage1_verifies_and_chains_to_stage0() {
     verify_platform_quote(Platform::Tdx, &prev.platform_quote, &prev_binding).unwrap();
 }
 
+// These fixtures do not carry the AMD certificate table, so full SNP
+// signature-chain verification currently calls AMD KDS. Keep that live
+// vendor dependency out of ordinary `cargo test`.
+#[cfg(feature = "sev-snp")]
 #[test]
+#[ignore = "requires live AMD KDS access"]
 fn snp_stage0_verifies() {
     verify_full_path(&load("snp_stage0.cbor"), Platform::SevSnp);
 }
 
+#[cfg(feature = "sev-snp")]
 #[test]
+#[ignore = "requires live AMD KDS access"]
 fn snp_stage1_verifies_and_chains_to_stage0() {
     let cbor = load("snp_stage1.cbor");
     let eat = EatToken::from_cbor(&cbor).unwrap();
@@ -106,6 +115,7 @@ fn snp_stage1_verifies_and_chains_to_stage0() {
     verify_platform_quote(Platform::SevSnp, &prev.platform_quote, &prev_binding).unwrap();
 }
 
+#[cfg(feature = "nitro")]
 #[test]
 fn nitro_stage0_verifies() {
     // Nitro cmd_enclave produces stage 0 only; no chain to walk.
@@ -123,11 +133,13 @@ fn nitro_stage0_verifies() {
 /// record: it's the exact attestation that proved the ouroboros
 /// closed. The test verifies it through the same
 /// `verify_platform_quote` path as every other TDX testdata entry.
+#[cfg(feature = "tdx")]
 #[test]
 fn ouroboros_attestation_verifies() {
     verify_full_path(&load("tdx_ouroboros.cbor"), Platform::Tdx);
 }
 
+#[cfg(all(feature = "tdx", feature = "sev-snp", feature = "nitro"))]
 #[test]
 fn all_three_platforms_share_no_cross_contamination() {
     // Sanity: each platform's bytes decode to its own platform

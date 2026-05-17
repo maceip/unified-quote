@@ -6,14 +6,21 @@
 //! On Linux 6.7+, configfs-tsm (/sys/kernel/config/tsm/report) exists
 //! for BOTH TDX and SNP. We must check the provider string to distinguish.
 
-use std::path::Path;
-
 use super::{TeeError, TeeProvider};
 
 /// Detect the TEE platform and return the appropriate provider.
+#[cfg(not(unix))]
 pub fn detect_tee() -> Result<Box<dyn TeeProvider>, TeeError> {
+    Err(TeeError::NoTeeDetected)
+}
+
+/// Detect the TEE platform and return the appropriate provider.
+#[cfg(unix)]
+pub fn detect_tee() -> Result<Box<dyn TeeProvider>, TeeError> {
+    use std::path::Path;
+
     // AWS Nitro: Nitro Security Module device (unambiguous)
-    #[cfg(feature = "nitro")]
+    #[cfg(all(feature = "nitro", unix))]
     if Path::new("/dev/nsm").exists() {
         return Ok(Box::new(super::nitro::NitroProvider::new()?));
     }
@@ -25,11 +32,11 @@ pub fn detect_tee() -> Result<Box<dyn TeeProvider>, TeeError> {
 
     // If both exist (shouldn't happen, but be safe): prefer the specific device
     if has_tdx_device && !has_snp_device {
-        #[cfg(feature = "tdx")]
+        #[cfg(all(feature = "tdx", unix))]
         return Ok(Box::new(super::tdx::TdxProvider::new()?));
     }
     if has_snp_device && !has_tdx_device {
-        #[cfg(feature = "sev-snp")]
+        #[cfg(all(feature = "sev-snp", unix))]
         return Ok(Box::new(super::snp::SnpProvider::new()?));
     }
 
@@ -47,11 +54,11 @@ pub fn detect_tee() -> Result<Box<dyn TeeProvider>, TeeError> {
 
             match provider.as_str() {
                 "tdx_guest" => {
-                    #[cfg(feature = "tdx")]
+                    #[cfg(all(feature = "tdx", unix))]
                     return Ok(Box::new(super::tdx::TdxProvider::new()?));
                 }
                 "sev_guest" => {
-                    #[cfg(feature = "sev-snp")]
+                    #[cfg(all(feature = "sev-snp", unix))]
                     return Ok(Box::new(super::snp::SnpProvider::new()?));
                 }
                 _ => {
@@ -62,11 +69,11 @@ pub fn detect_tee() -> Result<Box<dyn TeeProvider>, TeeError> {
     }
 
     // Last resort: try devices again (in case we missed them above due to feature gates)
-    #[cfg(feature = "sev-snp")]
+    #[cfg(all(feature = "sev-snp", unix))]
     if has_snp_device {
         return Ok(Box::new(super::snp::SnpProvider::new()?));
     }
-    #[cfg(feature = "tdx")]
+    #[cfg(all(feature = "tdx", unix))]
     if has_tdx_device {
         return Ok(Box::new(super::tdx::TdxProvider::new()?));
     }
