@@ -20,7 +20,8 @@
       <a href="#card">card</a>
       <a href="#proof">proof</a>
       <a href="#repo">repo</a>
-      <a href="https://github.com/maceip/runcards">github</a>
+      <a href="live.html">live</a>
+      <a href="https://github.com/maceip/unified-quote">github</a>
     </nav>
   </header>
 
@@ -155,7 +156,7 @@ deny:
   - browser.autofill</pre>
           </section>
           <section id="panel-ci" class="tab-panel" role="tabpanel" aria-labelledby="tab-ci" data-panel="ci" hidden>
-<pre is-="pre" size-="small">- uses: maceip/runcards/v2/action@main
+<pre is-="pre" size-="small">- uses: maceip/unified-quote/v2/action@main
   with:
     source: .
     cmd: npm ci && npm test && npm run build
@@ -264,19 +265,19 @@ allow:
 
       <div class="repo-list" is-="frame" box-="square">
         <div is-="frame-title">v2/</div>
-        <a class="proof-link" href="https://github.com/maceip/runcards/blob/main/v2/src/eat.rs">
+        <a class="proof-link" href="https://github.com/maceip/unified-quote/blob/main/v2/src/eat.rs">
           <span>src/eat.rs</span><span>EAT schema and binding bytes</span>
         </a>
-        <a class="proof-link" href="https://github.com/maceip/runcards/blob/main/v2/src/quote/verify.rs">
+        <a class="proof-link" href="https://github.com/maceip/unified-quote/blob/main/v2/src/quote/verify.rs">
           <span>src/quote/verify.rs</span><span>TDX, SNP, and Nitro quote verification</span>
         </a>
-        <a class="proof-link" href="https://github.com/maceip/runcards/blob/main/v2/src/net/attested_tls.rs">
+        <a class="proof-link" href="https://github.com/maceip/unified-quote/blob/main/v2/src/net/attested_tls.rs">
           <span>src/net/attested_tls.rs</span><span>EAT inside the TLS certificate</span>
         </a>
-        <a class="proof-link" href="https://github.com/maceip/runcards/blob/main/v2/tests/hardware_regression.rs">
+        <a class="proof-link" href="https://github.com/maceip/unified-quote/blob/main/v2/tests/hardware_regression.rs">
           <span>tests/hardware_regression.rs</span><span>real hardware fixture verification</span>
         </a>
-        <a class="proof-link" href="https://github.com/maceip/runcards/blob/main/v2/HARDWARE_VALIDATION.md">
+        <a class="proof-link" href="https://github.com/maceip/unified-quote/blob/main/v2/HARDWARE_VALIDATION.md">
           <span>HARDWARE_VALIDATION.md</span><span>Stage 0 to Stage 1 runbook</span>
         </a>
       </div>
@@ -300,7 +301,7 @@ allow:
         <tbody>
           <tr><td>GCP TDX</td><td>Stage 0 + Stage 1 + check</td><td>fastest full chain validation</td></tr>
           <tr><td>AWS Nitro</td><td>enclave build + attested TLS + KMS</td><td>strongest secret-release story</td></tr>
-          <tr><td>AWS SEV-SNP</td><td>Stage 0 + NitroTPM-linked evidence</td><td>common confidential VM path</td></tr>
+          <tr><td>AWS SEV-SNP</td><td>Stage 0 + VCEK signature chain</td><td>common confidential VM path</td></tr>
           <tr><td>Azure CVM</td><td>collector decision, then Stage 0</td><td>turn tested-not-verified into a supported path</td></tr>
         </tbody>
       </table>
@@ -324,7 +325,7 @@ allow:
   <footer class="site-footer">
     <span>Runcard</span>
     <span>proof before privilege</span>
-    <a href="https://github.com/maceip/runcards">github.com/maceip/runcards</a>
+    <a href="https://github.com/maceip/unified-quote">github.com/maceip/unified-quote</a>
   </footer>
 
   <script src="assets/runcard.js?v=20260517"></script>

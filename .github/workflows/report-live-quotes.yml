@@ -1,0 +1,43 @@
+name: Report live quotes
+
+# Re-verifies every registered node by running `runcard check` against its
+# attested-TLS endpoint, then publishes the results to docs/status/nodes.json.
+# The Deploy Pages workflow picks up the docs/** change and republishes the
+# live dashboard at /live.html.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: report-live-quotes
+  cancel-in-progress: true
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify each node and write status
+        run: |
+          set -euo pipefail
+          chmod +x dist/bountynet-linux-x86_64
+          python3 deploy/report_nodes.py
+        env:
+          RUNCARD_BIN: dist/bountynet-linux-x86_64
+          NODES_CONFIG: deploy/nodes.config.json
+          STATUS_OUT: docs/status/nodes.json
+
+      - name: Commit status if changed
+        run: |
+          set -euo pipefail
+          git config user.name "runcard-bot"
+          git config user.email "bot@runcard.dev"
+          git add docs/status/nodes.json
+          git diff --cached --quiet || git commit -m "status: refresh live node quotes [skip ci]"
+          git push

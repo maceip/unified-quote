@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en" data-webtui-theme="cs16">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Runcard - live node status</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="assets/webtui/cs.css">
+  <link rel="stylesheet" href="assets/runcard.css?v=20260517">
+  <style>
+    .live-wrap { max-width: 1100px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+    .live-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.75rem 1.25rem; margin-bottom: 0.5rem; }
+    .live-meta { opacity: 0.7; font-size: 0.85rem; }
+    .node-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.25rem; margin-top: 1.5rem; }
+    .node-card { border: 1px solid var(--background2, #333); border-radius: 6px; padding: 1.1rem 1.25rem; background: var(--background1, #111); }
+    .node-card h3 { margin: 0 0 0.15rem; font-size: 1.05rem; }
+    .node-sub { opacity: 0.65; font-size: 0.8rem; margin-bottom: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .kv { display: grid; grid-template-columns: 7.5rem 1fr; gap: 0.3rem 0.75rem; font-size: 0.86rem; }
+    .kv dt { opacity: 0.6; }
+    .kv dd { margin: 0; word-break: break-all; font-variant-numeric: tabular-nums; }
+    .verdict { display: inline-block; padding: 0.1rem 0.6rem; border-radius: 999px; font-size: 0.74rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+    .verdict.verified { background: #0f5132; color: #d1f7e0; }
+    .verdict.failed   { background: #5c1a1a; color: #ffd6d6; }
+    .verdict.pending  { background: #4a3f12; color: #f7ecc0; }
+    .verdict.offline  { background: #333; color: #bbb; }
+    .empty { opacity: 0.6; padding: 2rem 0; }
+    a.back { font-size: 0.85rem; opacity: 0.8; }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="index.html" aria-label="Runcard home">
+      <span class="brand-mark">RC</span>
+      <span>Runcard</span>
+    </a>
+    <nav is-="toolbar" class="top-nav" aria-label="Primary navigation">
+      <a href="index.html">overview</a>
+      <a href="live.html" aria-current="page">live</a>
+      <a href="https://github.com/maceip/unified-quote">github</a>
+    </nav>
+  </header>
+
+  <main class="live-wrap" id="top">
+    <div class="live-head">
+      <h1 style="margin:0;">Live node status</h1>
+      <span is-="badge" variant-="primary">cross-cloud attestation</span>
+    </div>
+    <p class="lede" style="margin-top:0.25rem;">
+      Each node below is independently re-verified by a scheduled GitHub workflow
+      that runs <code>runcard check</code> against its attested-TLS endpoint. The
+      verdict reflects a fresh hardware-quote verification, not a static claim.
+    </p>
+    <p class="live-meta" id="meta">loading status&hellip;</p>
+
+    <div class="node-grid" id="grid"></div>
+    <p class="empty" id="empty" hidden>No nodes have reported yet.</p>
+
+    <p style="margin-top:2.5rem;">
+      <a class="back" href="index.html">&larr; back to overview</a>
+    </p>
+  </main>
+
+  <script>
+    (() => {
+      "use strict";
+      const grid = document.getElementById("grid");
+      const meta = document.getElementById("meta");
+      const empty = document.getElementById("empty");
+
+      const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => (
+        { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]
+      ));
+
+      const fmtTime = (iso) => {
+        if (!iso) return "never";
+        const d = new Date(iso);
+        return Number.isNaN(d.getTime()) ? esc(iso) : d.toUTCString();
+      };
+
+      const row = (k, v) => v == null || v === "" ? "" :
+        `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`;
+
+      const measurementsRows = (m) => {
+        if (!m || typeof m !== "object") return "";
+        return Object.entries(m).slice(0, 4)
+          .map(([k, v]) => row(k, typeof v === "string" ? v.slice(0, 24) + (v.length > 24 ? "…" : "") : v))
+          .join("");
+      };
+
+      const card = (n) => {
+        const verdict = (n.verdict || "pending").toLowerCase();
+        return `<article class="node-card">
+          <h3>${esc(n.label || n.id)}
+            <span class="verdict ${esc(verdict)}">${esc(verdict)}</span>
+          </h3>
+          <div class="node-sub">${esc(n.cloud || "")} · ${esc(n.region || "")} · ${esc(n.platform || "")}</div>
+          <dl class="kv">
+            ${row("value x", n.value_x_short || n.value_x)}
+            ${row("spki bind", n.spki_binding)}
+            ${row("quote sig", n.quote_signature)}
+            ${row("chain", n.chain)}
+            ${measurementsRows(n.measurements)}
+            ${row("endpoint", n.endpoint)}
+            ${row("checked", fmtTime(n.checked_at))}
+            ${row("detail", n.detail)}
+          </dl>
+        </article>`;
+      };
+
+      fetch("status/nodes.json?ts=" + Date.now())
+        .then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+        .then((data) => {
+          const nodes = Array.isArray(data.nodes) ? data.nodes : [];
+          meta.textContent = "last updated: " + fmtTime(data.updated_at) +
+            " · " + nodes.length + " node(s) · generated by " + (data.generator || "report workflow");
+          if (nodes.length === 0) { empty.hidden = false; return; }
+          grid.innerHTML = nodes.map(card).join("");
+        })
+        .catch((e) => {
+          meta.textContent = "could not load status/nodes.json: " + e.message;
+          empty.hidden = false;
+        });
+    })();
+  </script>
+</body>
+</html>

@@ -1,57 +1,45 @@
-# Runcard
+# unified-quote
 
-Runcard is proof before privilege for agentic software.
+**One attestation receipt across cloud TEEs.** `unified-quote` defines a single
+EAT-based quote format and verifier that behaves identically on **AWS Nitro**,
+**AMD SEV-SNP**, and **Intel TDX**. A workload proves what code is running with a
+hardware quote, and that proof verifies the same way regardless of which cloud
+or chip it landed on.
 
-Before an app gives an agent, MCP server, package, deploy job, or service real
-power, it should be able to ask one practical question:
+The trust is rooted in the CPU vendor, not in any one provider: the same receipt
+verifies on AWS, Azure, GCP, or bare metal and travels with the workload across
+clouds — no shared control plane required.
 
-> Is this live thing really the reviewed source it claims to be?
+## The stack
 
-Runcard is a small proof card that apps and workflows can verify before
-releasing secrets, tokens, deploy rights, filesystem access, or customer data.
+`unified-quote` is the **quote-format** layer of a confidential-compute platform
+for running agents inside hardware TEEs across clouds. Each layer is its own
+repo so it can be adopted independently:
 
-![Runcard verified badge](docs/assets/runcard-card.svg)
+| Layer | Repo | Role |
+|---|---|---|
+| Agent platform | [cvm-agent](https://github.com/maceip/cvm-agent) | End-to-end confidential-VM agent runtime — the product capstone |
+| Attestation service | [attestation-service](https://github.com/maceip/attestation-service) | Shadow-builds and verifies EAT receipts for arbitrary source |
+| **Quote format** | **unified-quote** — you are here | One EAT/quote format + verifier across Nitro, SEV-SNP, TDX |
+| In-TEE runtime | [attested-workload](https://github.com/maceip/attested-workload) | Runs and serves a workload inside the TEE over attested TLS |
 
-```ts
-const verdict = await runcard.verify("https://agent.example.com", {
-  source: "github.com/acme/support-flow",
-  policy: "reviewed-main-only"
-});
+Read bottom-up: a workload runs inside a TEE ([attested-workload](https://github.com/maceip/attested-workload)),
+emits a portable receipt in this format (`unified-quote`), gets that receipt
+issued/verified as a service ([attestation-service](https://github.com/maceip/attestation-service)),
+and an agent runtime gates privilege on it ([cvm-agent](https://github.com/maceip/cvm-agent)).
 
-if (verdict.ok) {
-  await secrets.release("PROD_SUPPORT_TOKEN");
-}
-```
+## What works today
 
-## Why Devs Should Care
-
-- **Agentic workflows:** prove the running workflow before it gets a GitHub,
-  Linear, Stripe, or cloud token.
-- **MCP tool servers:** expose discovery first, then require a receipt before
-  model-controlled shell, database, browser, or filesystem tools.
-- **Package promotion:** compare an ordinary CI artifact with a hardware-rooted
-  rebuild witness before publishing.
-- **Secret release:** let KMS, Vault, or app middleware release sensitive
-  material only to a verified runtime.
-- **Deploy gates:** turn attestation into a pass/fail check developers can read
-  in a PR, release job, or service log.
-
-The point is not to make everyone care about code signing. The point is to give
-modern software a simple boundary: no proof, no privilege.
-
-## What Works Today
-
-The `v2/` implementation already proves the cryptographic core:
+The `v2/` implementation proves the cryptographic core:
 
 - Stage 0 attested build inside a TEE.
 - Stage 1 attested runtime that verifies Stage 0 before serving.
 - Attested TLS certificate carrying an EAT receipt.
 - Recursive chain walk from runtime back to build.
-- Real hardware quote verification for Intel TDX, AMD SEV-SNP, and AWS Nitro
-  fixtures.
+- Real hardware quote verification for Intel TDX, AMD SEV-SNP, and AWS Nitro,
+  each with its own evidence device, quote format, and pinned vendor root
+  (see [Platform Support](#platform-support)).
 - Ouroboros CI path where this repo is built by its own attested runner.
-
-That is the engine. Runcard is the developer-facing shape around it.
 
 ## Product Surface
 
@@ -96,7 +84,7 @@ Drop one step into CI and receive `proof-receipt.json` plus the raw
 `attestation.cbor` evidence.
 
 ```yaml
-- uses: maceip/runcards/v2/action@main
+- uses: maceip/cvm-agent/action@main
   with:
     source: .
     cmd: npm test && npm run build
@@ -163,27 +151,82 @@ signed by the pinned vendor root, the runtime chains back to the build,
 `Value X` stays stable across the chain, and project policy allows that
 identity to receive privilege.
 
-## Hardware Status
+## Platform Support
 
-| Platform | Hardware | Root of trust | Chain | Status |
-|---|---|---|---|---|
-| Intel TDX | GCP c3-standard-4 | Intel SGX Root CA | Stage 0 to Stage 1 | Proven |
-| AMD SEV-SNP | AWS c6a.xlarge | AMD Root Key | Stage 0 to Stage 1 | Proven fixtures |
-| AWS Nitro | AWS m5.xlarge enclave | AWS Nitro Root CA | Stage 0 single-process | Proven |
-| Azure SEV-SNP | Azure Standard_DC4as_v5 CVM | AMD PSP + Azure vTOM | blocked before Stage 0 | Tested, not verified |
+Runcard speaks three hardware attestation dialects behind one verifier. Each
+platform has its own evidence device, quote format, and vendor signature
+scheme; `verify_platform_quote` ([`v2/src/quote/verify.rs`](v2/src/quote/verify.rs))
+normalizes all three to the same check: *report_data binds our value, and the
+signature chains to a pinned vendor root.*
 
-Real attestation bytes live in [`v2/testdata/chain/`](v2/testdata/chain). The
-regression suite runs TDX and Nitro verification by default; SNP fixtures are
-present but the full signature test is ignored by default because the captured
-reports currently require live AMD KDS access.
+### Intel TDX
+
+- **Evidence:** configfs-tsm (`/sys/kernel/config/tsm/report`, preferred) or the
+  legacy `/dev/tdx-guest` ioctl plus a Quote Generation Service.
+  ([`v2/src/tee/tdx.rs`](v2/src/tee/tdx.rs))
+- **Quote:** DCAP TD Quote v4. Measurements are `MRTD` (boot-locked firmware
+  measurement) and `RTMR0-3`; the binding lives in `REPORTDATA[0..32]`.
+- **Root of trust:** ECDSA-P256 chain `Intel SGX Root CA → PCK → QE report →
+  Attestation Key`, root pinned by SHA-256 fingerprint.
+- **Status:** proven Stage 0 → Stage 1 on GCP `c3-standard-4`. Verified in the
+  default test suite, including the ouroboros self-build fixture.
+
+### AMD SEV-SNP
+
+- **Evidence:** `/dev/sev-guest` ioctl (`SNP_GET_EXT_REPORT`, falling back to
+  `SNP_GET_REPORT`) or configfs-tsm on Linux 6.7+.
+  ([`v2/src/tee/snp.rs`](v2/src/tee/snp.rs))
+- **Quote:** 1184-byte SNP attestation report. `MEASUREMENT` is the launch
+  digest; the binding lives in `REPORT_DATA[0..32]`.
+- **Root of trust:** ECDSA-P384 chain `ARK → ASK → VCEK`. The VCEK is read from
+  the report's embedded cert table when present, otherwise fetched live from
+  AMD KDS. Root pinned to the AMD ARK fingerprint (Milan for report v2, Genoa
+  for v5).
+- **Status:** verifier proven against captured fixtures. The committed fixtures
+  do not carry the embedded cert table, so the full signature test calls AMD
+  KDS and is `#[ignore]`d in the default `cargo test` to avoid a live network
+  dependency.
+
+### AWS Nitro
+
+- **Evidence:** `/dev/nsm` via the Nitro Security Module API.
+  ([`v2/src/tee/nitro.rs`](v2/src/tee/nitro.rs))
+- **Quote:** a COSE_Sign1 attestation document carrying `PCR0-15` and an
+  enclave-generated RSA-2048 public key (used so AWS KMS can encrypt a
+  `CiphertextForRecipient` only this enclave can decrypt). The binding lives in
+  `user_data[0..32]`.
+- **Root of trust:** ECDSA-P384 / ES384 chain `AWS Nitro Root CA → cabundle →
+  leaf certificate`, root pinned by SHA-256 fingerprint.
+- **Status:** proven single-process Stage 0 on an `m5.xlarge` enclave. Verified
+  in the default test suite. Stage 0 → Stage 1 chaining needs a second enclave
+  running `cmd_run` (a follow-up, not a gap in verification).
+
+### Summary
+
+| Platform | Hardware | Evidence path | Signature → pinned root | Chain | Status |
+|---|---|---|---|---|---|
+| Intel TDX | GCP c3-standard-4 | configfs-tsm / `/dev/tdx-guest` | ECDSA-P256 → Intel SGX Root CA | Stage 0 to Stage 1 | Proven (default tests) |
+| AMD SEV-SNP | AWS c6a.xlarge | `/dev/sev-guest` / configfs-tsm | ECDSA-P384 → AMD ARK | Stage 0 to Stage 1 | Proven; full sig test needs live AMD KDS |
+| AWS Nitro | AWS m5.xlarge enclave | `/dev/nsm` (NSM) | ECDSA-P384 → AWS Nitro Root CA | Stage 0 single-process | Proven (default tests) |
+| Azure SEV-SNP | Azure Standard_DC4as_v5 CVM | AMD PSP + Azure vTOM | (no raw SNP evidence path) | blocked before Stage 0 | Tested, not verified |
+
+Real attestation bytes live in [`v2/testdata/chain/`](v2/testdata/chain) and the
+pinned vendor roots are in [`v2/src/quote/roots.rs`](v2/src/quote/roots.rs). The
+regression suite ([`v2/tests/hardware_regression.rs`](v2/tests/hardware_regression.rs))
+runs TDX and Nitro verification by default; the SNP signature test is present
+but ignored by default because the captured reports currently require live AMD
+KDS access. Azure CVM provisions with AMD SEV memory encryption but does not
+expose a raw `/dev/sev-guest` / configfs-tsm evidence path through its vTOM
+paravisor, so it stays *tested, not verified* until an Azure MAA/vTOM collector
+is added — see [`v2/HARDWARE_VALIDATION.md`](v2/HARDWARE_VALIDATION.md).
 
 ## Quick Start
 
 You need Rust installed to build the current engine locally.
 
 ```bash
-git clone https://github.com/maceip/runcards
-cd runcards/v2
+git clone https://github.com/maceip/unified-quote
+cd unified-quote/v2
 cargo build --release --bin runcard
 cargo test
 ```
@@ -209,21 +252,32 @@ Verify it from any machine:
 ./target/release/runcard check https://<domain>/
 ```
 
-## OpenClaw-Style Use
+## Agent Workflow
 
-For a modern agentic app, the useful boundary is not "this binary is signed."
-It is:
+For an agent deployed across clouds, the useful boundary is not "this binary is
+signed." It is:
 
-1. Build the app, tool server, package, or release artifact.
+1. Build the agent, tool server, package, or release artifact.
 2. Get a Runcard receipt for the source and artifact.
 3. Gate secrets, publish rights, deploy rights, or live tool access on that
-   receipt.
-4. Show the card in the PR, release page, package page, or service health view.
+   receipt — wherever the agent runs.
+4. Show the card in the PR, release page, package page, or live status view.
 
-That flow should be usable from an ordinary GitHub-hosted job. The current
-repository has the cryptographic pieces, but the next product cut is the
-developer path: `proof-receipt.json`, `runcard gate`, check summaries, and a
-hosted shadow receipt option for teams that do not run their own TEE hardware.
+The receipt travels with the agent, so the same verification works whether it
+lands on AWS, Azure, GCP, or your own hardware. This flow should be usable from
+an ordinary GitHub-hosted job; the current repository has the cryptographic
+pieces, and the next product cut is the developer path: `proof-receipt.json`,
+`runcard gate`, check summaries, and a hosted shadow receipt option for teams
+that do not run their own TEE hardware.
+
+## Live Status
+
+A public dashboard at [maceip.github.io/unified-quote/live.html](https://maceip.github.io/unified-quote/live.html)
+shows the current verdict for each registered node. A scheduled workflow runs
+`runcard check` against every node, writes the results to
+[`docs/status/nodes.json`](docs/status/nodes.json), and republishes the page —
+so the dashboard reflects live, independently re-verified attestations rather
+than a static claim.
 
 ## Repo Map
 
@@ -236,6 +290,8 @@ hosted shadow receipt option for teams that do not run their own TEE hardware.
 - [`v2/SHADOW.md`](v2/SHADOW.md): no-TEE-required shadow attestation plan.
 - [`docs/index.html`](docs/index.html): public Runcard narrative and browser
   proof.
+- [`docs/live.html`](docs/live.html): live cross-cloud node status dashboard.
+- [`deploy/`](deploy): per-cloud provisioning scripts (AWS, Azure, GCP).
 
 ## Status
 

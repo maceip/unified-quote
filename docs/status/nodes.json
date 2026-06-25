@@ -1,0 +1,41 @@
+{
+  "updated_at": "2026-06-25T15:11:49Z",
+  "generator": "report-live-quotes.yml",
+  "schema": 1,
+  "nodes": [
+    {
+      "id": "aws-nitro-use2",
+      "label": "AWS Nitro Enclave",
+      "cloud": "aws",
+      "region": "us-east-2",
+      "platform": "Nitro",
+      "endpoint": null,
+      "verdict": "pending",
+      "value_x": null,
+      "value_x_short": null,
+      "measurements": {},
+      "spki_binding": null,
+      "quote_signature": null,
+      "chain": null,
+      "checked_at": null,
+      "detail": "registered, awaiting first live report"
+    },
+    {
+      "id": "azure-cvm-ne",
+      "label": "Azure Confidential VM",
+      "cloud": "azure",
+      "region": "northeurope",
+      "platform": "SevSnp",
+      "endpoint": null,
+      "verdict": "pending",
+      "value_x": null,
+      "value_x_short": null,
+      "measurements": {},
+      "spki_binding": null,
+      "quote_signature": null,
+      "chain": null,
+      "checked_at": null,
+      "detail": "registered, awaiting first live report"
+    }
+  ]
+}
