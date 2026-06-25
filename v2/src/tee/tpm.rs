@@ -52,7 +52,7 @@ pub fn collect_tpm_attestation(nonce: &[u8]) -> Result<TpmAttestation, String> {
         match collect_signed_attestation(&tool, nonce) {
             Ok(att) => return Ok(att),
             Err(e) => {
-                eprintln!("[bountynet/tpm] Signed attestation failed ({e}), trying sysfs");
+                eprintln!("[uq/tpm] Signed attestation failed ({e}), trying sysfs");
             }
         }
     }
@@ -102,7 +102,7 @@ fn collect_signed_attestation(tool_path: &str, nonce: &[u8]) -> Result<TpmAttest
     let digest: [u8; 32] = Sha256::digest(&doc).into();
 
     eprintln!(
-        "[bountynet/tpm] Signed NitroTPM attestation: {} bytes, {} PCRs",
+        "[uq/tpm] Signed NitroTPM attestation: {} bytes, {} PCRs",
         doc.len(),
         pcrs.len()
     );

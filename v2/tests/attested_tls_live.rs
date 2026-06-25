@@ -18,11 +18,11 @@
 //! - `spki_hash_of_cert(peer_cert)` equals the producer-side
 //!   `spki_hash_of(keypair)`, end-to-end across a real network socket.
 
-use bountynet::eat::{BuildComponents, EatToken};
-use bountynet::net::attested_tls::{
+use unified_quote::eat::{BuildComponents, EatToken};
+use unified_quote::net::attested_tls::{
     extract_eat_from_cert, generate_keypair, make_attested_cert, spki_hash_of, spki_hash_of_cert,
 };
-use bountynet::quote::Platform;
+use unified_quote::quote::Platform;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;

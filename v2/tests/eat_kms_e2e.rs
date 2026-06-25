@@ -36,8 +36,8 @@
 //! # att.cbor should decode as an EatToken containing the raw quote.
 //! ```
 
-use bountynet::eat::{BuildComponents, EatToken, EAT_PROFILE, EAT_VERSION};
-use bountynet::quote::{verify, Platform};
+use unified_quote::eat::{BuildComponents, EatToken, EAT_PROFILE, EAT_VERSION};
+use unified_quote::quote::{verify, Platform};
 use serde_json::Value;
 use std::fs;
 

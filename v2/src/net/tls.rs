@@ -93,7 +93,7 @@ impl TlsState {
 /// Start the TLS server. Runs until cancelled.
 pub async fn serve(state: Arc<TlsState>, port: u16) -> Result<()> {
     let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await?;
-    eprintln!("[bountynet/tls] Listening on :{port}");
+    eprintln!("[uq/tls] Listening on :{port}");
 
     loop {
         let (stream, addr) = listener.accept().await?;
@@ -127,7 +127,7 @@ pub async fn serve(state: Arc<TlsState>, port: u16) -> Result<()> {
                 Err(e) => {
                     // TLS handshake failed — this is normal during ACME challenges
                     // when Let's Encrypt probes with non-matching SNI
-                    eprintln!("[bountynet/tls] Handshake failed from {addr}: {e}");
+                    eprintln!("[uq/tls] Handshake failed from {addr}: {e}");
                 }
             }
         });

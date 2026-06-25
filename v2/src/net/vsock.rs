@@ -36,7 +36,7 @@ pub fn setup_loopback() -> Result<()> {
 
     match status {
         Ok(s) if s.success() => {
-            eprintln!("[bountynet/vsock] Loopback interface up");
+            eprintln!("[uq/vsock] Loopback interface up");
             Ok(())
         }
         _ => {
@@ -49,11 +49,11 @@ pub fn setup_loopback() -> Result<()> {
                     let _ = std::process::Command::new("ip")
                         .args(["addr", "add", "127.0.0.1/8", "dev", "lo"])
                         .status();
-                    eprintln!("[bountynet/vsock] Loopback interface up (via ip)");
+                    eprintln!("[uq/vsock] Loopback interface up (via ip)");
                     Ok(())
                 }
                 _ => {
-                    eprintln!("[bountynet/vsock] WARNING: could not set up loopback");
+                    eprintln!("[uq/vsock] WARNING: could not set up loopback");
                     Ok(()) // Continue anyway — vsock direct serving still works
                 }
             }
@@ -66,19 +66,19 @@ pub fn setup_loopback() -> Result<()> {
 /// and forwards them to the TLS server on 127.0.0.1:443.
 pub fn bridge_vsock_to_loopback(loopback_port: u16) -> Result<()> {
     let fd = create_vsock_listener()?;
-    eprintln!("[bountynet/vsock] Bridge listening: vsock:{VSOCK_PORT} → 127.0.0.1:{loopback_port}");
+    eprintln!("[uq/vsock] Bridge listening: vsock:{VSOCK_PORT} → 127.0.0.1:{loopback_port}");
 
     loop {
         let client_fd = unsafe { libc::accept(fd, std::ptr::null_mut(), std::ptr::null_mut()) };
         if client_fd < 0 {
-            eprintln!("[bountynet/vsock] Accept failed");
+            eprintln!("[uq/vsock] Accept failed");
             continue;
         }
 
         let loopback_port = loopback_port;
         std::thread::spawn(move || {
             if let Err(e) = pipe_vsock_to_tcp(client_fd, loopback_port) {
-                eprintln!("[bountynet/vsock] Pipe error: {e}");
+                eprintln!("[uq/vsock] Pipe error: {e}");
             }
         });
     }
@@ -89,13 +89,13 @@ pub fn bridge_vsock_to_loopback(loopback_port: u16) -> Result<()> {
 /// and forwards them to the enclave's vsock.
 pub fn bridge_tcp_to_vsock(listen_port: u16, enclave_cid: u32) -> Result<()> {
     let listener = std::net::TcpListener::bind(format!("0.0.0.0:{listen_port}"))?;
-    eprintln!("[bountynet/vsock] Proxy listening: TCP:{listen_port} → vsock CID {enclave_cid}:{VSOCK_PORT}");
+    eprintln!("[uq/vsock] Proxy listening: TCP:{listen_port} → vsock CID {enclave_cid}:{VSOCK_PORT}");
 
     for stream in listener.incoming() {
         let stream = match stream {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("[bountynet/vsock] TCP accept error: {e}");
+                eprintln!("[uq/vsock] TCP accept error: {e}");
                 continue;
             }
         };
@@ -103,7 +103,7 @@ pub fn bridge_tcp_to_vsock(listen_port: u16, enclave_cid: u32) -> Result<()> {
         let cid = enclave_cid;
         std::thread::spawn(move || {
             if let Err(e) = pipe_tcp_to_vsock(stream, cid) {
-                eprintln!("[bountynet/vsock] Proxy pipe error: {e}");
+                eprintln!("[uq/vsock] Proxy pipe error: {e}");
             }
         });
     }
@@ -115,7 +115,7 @@ pub fn bridge_tcp_to_vsock(listen_port: u16, enclave_cid: u32) -> Result<()> {
 /// Used as a fallback when loopback is not available.
 pub fn serve_vsock(attestation_json: &str) -> Result<()> {
     let fd = create_vsock_listener()?;
-    eprintln!("[bountynet/vsock] Serving attestation on vsock port {VSOCK_PORT}");
+    eprintln!("[uq/vsock] Serving attestation on vsock port {VSOCK_PORT}");
 
     loop {
         let client_fd = unsafe { libc::accept(fd, std::ptr::null_mut(), std::ptr::null_mut()) };
@@ -174,19 +174,19 @@ pub fn serve_tls_vsock(
         std::sync::Arc::new(std::sync::RwLock::new(tls_config));
     #[cfg(feature = "nitro")]
     let kms_state_arc = kms_state;
-    eprintln!("[bountynet/vsock] TLS+vsock listening on port {VSOCK_PORT}");
+    eprintln!("[uq/vsock] TLS+vsock listening on port {VSOCK_PORT}");
     eprintln!(
-        "[bountynet/vsock] EAT endpoint: GET /eat ({} bytes)",
+        "[uq/vsock] EAT endpoint: GET /eat ({} bytes)",
         eat_bytes.len()
     );
     if kms_key.is_some() {
-        eprintln!("[bountynet/vsock] KMS endpoints: GET /kms-attestation, POST /kms-unwrap");
+        eprintln!("[uq/vsock] KMS endpoints: GET /kms-attestation, POST /kms-unwrap");
     }
 
     loop {
         let client_fd = unsafe { libc::accept(fd, std::ptr::null_mut(), std::ptr::null_mut()) };
         if client_fd < 0 {
-            eprintln!("[bountynet/vsock] Accept failed");
+            eprintln!("[uq/vsock] Accept failed");
             continue;
         }
 
@@ -218,7 +218,7 @@ pub fn serve_tls_vsock(
             let conn = match rustls::ServerConnection::new(config) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("[bountynet/vsock] TLS conn: {e}");
+                    eprintln!("[uq/vsock] TLS conn: {e}");
                     return;
                 }
             };
@@ -331,7 +331,7 @@ fn handle_kms_attestation(kms_state: &Option<std::sync::Arc<KmsState>>) -> Strin
         Ok(doc) => {
             use base64::Engine;
             let doc_b64 = base64::engine::general_purpose::STANDARD.encode(&doc);
-            eprintln!("[bountynet/vsock] Fresh attestation: {} bytes", doc.len());
+            eprintln!("[uq/vsock] Fresh attestation: {} bytes", doc.len());
             let json = format!("{{\"attestation_document_b64\":\"{doc_b64}\"}}");
             format!(
                 "HTTP/1.1 200 OK\r\n\
@@ -344,7 +344,7 @@ fn handle_kms_attestation(kms_state: &Option<std::sync::Arc<KmsState>>) -> Strin
             )
         }
         Err(e) => {
-            eprintln!("[bountynet/vsock] Fresh attestation failed: {e}");
+            eprintln!("[uq/vsock] Fresh attestation failed: {e}");
             http_response(500, &format!("attestation refresh failed: {e}"))
         }
     }
@@ -404,17 +404,17 @@ fn swap_tls_config(
                 // Accept both acme-tls/1 (for LE validation) and h2/http1.1 (for our own POST /tls-cert)
                 new_config.alpn_protocols = vec![b"acme-tls/1".to_vec(), b"http/1.1".to_vec()];
                 eprintln!(
-                    "[bountynet/vsock] ACME challenge cert installed (alpn: acme-tls/1 + http/1.1)"
+                    "[uq/vsock] ACME challenge cert installed (alpn: acme-tls/1 + http/1.1)"
                 );
             } else {
-                eprintln!("[bountynet/vsock] TLS cert hot-swapped");
+                eprintln!("[uq/vsock] TLS cert hot-swapped");
             }
             let mut guard = live_config.write().unwrap();
             *guard = std::sync::Arc::new(new_config);
             http_response(200, "cert installed")
         }
         Err(e) => {
-            eprintln!("[bountynet/vsock] TLS cert swap failed: {e}");
+            eprintln!("[uq/vsock] TLS cert swap failed: {e}");
             http_response(400, &format!("invalid cert/key: {e}"))
         }
     }
@@ -456,13 +456,13 @@ fn handle_kms_unwrap(request: &str, kms_key: &Option<Vec<u8>>) -> String {
             Ok(plaintext) => {
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&plaintext);
                 eprintln!(
-                    "[bountynet/vsock] KMS unwrap: {} bytes decrypted",
+                    "[uq/vsock] KMS unwrap: {} bytes decrypted",
                     plaintext.len()
                 );
                 http_response(200, &b64)
             }
             Err(e) => {
-                eprintln!("[bountynet/vsock] KMS unwrap failed: {e}");
+                eprintln!("[uq/vsock] KMS unwrap failed: {e}");
                 http_response(500, &format!("decrypt failed: {e}"))
             }
         }

@@ -29,7 +29,7 @@ pub fn fetch_vcek(
         "{KDS_BASE}/vcek/v1/{product}/{chip_id_hex}?blSPL={bl_spl}&teeSPL={tee_spl}&snpSPL={snp_spl}&ucodeSPL={ucode_spl}"
     );
 
-    eprintln!("[bountynet/kds] Fetching VCEK from AMD KDS: {url}");
+    eprintln!("[uq/kds] Fetching VCEK from AMD KDS: {url}");
 
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -68,7 +68,7 @@ pub fn fetch_vcek(
 pub fn fetch_cert_chain(product: &str) -> Result<(Vec<u8>, Vec<u8>), String> {
     let url = format!("{KDS_BASE}/vcek/v1/{product}/cert_chain");
 
-    eprintln!("[bountynet/kds] Fetching cert chain from AMD KDS: {url}");
+    eprintln!("[uq/kds] Fetching cert chain from AMD KDS: {url}");
 
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(10))

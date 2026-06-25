@@ -38,7 +38,7 @@ pub async fn provision_cert_for_enclave(
 ) -> Result<()> {
     use sha2::{Digest, Sha256};
 
-    eprintln!("[bountynet/acme] Requesting cert for: {domain}");
+    eprintln!("[uq/acme] Requesting cert for: {domain}");
 
     let url = if use_staging {
         LetsEncrypt::Staging.url()
@@ -58,12 +58,12 @@ pub async fn provision_cert_for_enclave(
             None,
         )
         .await?;
-    eprintln!("[bountynet/acme] Account created");
+    eprintln!("[uq/acme] Account created");
 
     // Step 2: Create order
     let identifiers = vec![Identifier::Dns(domain.to_string())];
     let mut order = account.new_order(&NewOrder::new(&identifiers)).await?;
-    eprintln!("[bountynet/acme] Order created");
+    eprintln!("[uq/acme] Order created");
 
     // Step 3: Process authorizations
     let http = reqwest::Client::builder()
@@ -85,23 +85,23 @@ pub async fn provision_cert_for_enclave(
             .ok_or_else(|| anyhow::anyhow!("No TLS-ALPN-01 challenge offered"))?;
 
         let key_auth = challenge.key_authorization();
-        eprintln!("[bountynet/acme] Challenge for {}", challenge.identifier());
+        eprintln!("[uq/acme] Challenge for {}", challenge.identifier());
 
         // Generate challenge cert with acmeIdentifier extension
         let challenge_pem = generate_alpn_challenge_cert(domain, key_auth.as_str())?;
 
         // Install challenge cert into enclave (with acme-tls/1 ALPN)
         let install_url = format!("{enclave_url}/acme-challenge");
-        eprintln!("[bountynet/acme] Installing challenge cert into enclave...");
+        eprintln!("[uq/acme] Installing challenge cert into enclave...");
         let resp = http.post(&install_url).body(challenge_pem).send().await?;
         if !resp.status().is_success() {
             anyhow::bail!("Failed to install challenge cert: {}", resp.text().await?);
         }
-        eprintln!("[bountynet/acme] Challenge cert installed");
+        eprintln!("[uq/acme] Challenge cert installed");
 
         // Tell Let's Encrypt we're ready
         challenge.set_ready().await?;
-        eprintln!("[bountynet/acme] Challenge submitted, waiting for validation...");
+        eprintln!("[uq/acme] Challenge submitted, waiting for validation...");
     }
 
     // Step 4: Wait for order to be ready
@@ -109,12 +109,12 @@ pub async fn provision_cert_for_enclave(
     if status != OrderStatus::Ready {
         anyhow::bail!("Order not ready: {status:?}");
     }
-    eprintln!("[bountynet/acme] Challenge PASSED");
+    eprintln!("[uq/acme] Challenge PASSED");
 
     // Step 5: Finalize — get the real cert
     let private_key_pem = order.finalize().await?;
     let cert_chain_pem = order.poll_certificate(&RetryPolicy::default()).await?;
-    eprintln!("[bountynet/acme] Certificate issued for {domain}");
+    eprintln!("[uq/acme] Certificate issued for {domain}");
 
     // Step 6: Install real cert into enclave
     let real_pem = format!("{cert_chain_pem}\n{private_key_pem}");
@@ -124,8 +124,8 @@ pub async fn provision_cert_for_enclave(
         anyhow::bail!("Failed to install real cert: {}", resp.text().await?);
     }
 
-    eprintln!("[bountynet/acme] Real cert installed. TLS is now valid for {domain}");
-    eprintln!("[bountynet/acme] Cert will appear in Certificate Transparency logs.");
+    eprintln!("[uq/acme] Real cert installed. TLS is now valid for {domain}");
+    eprintln!("[uq/acme] Cert will appear in Certificate Transparency logs.");
 
     Ok(())
 }

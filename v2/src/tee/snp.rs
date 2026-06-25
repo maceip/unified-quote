@@ -92,7 +92,7 @@ impl TeeProvider for SnpProvider {
             match collect_via_configfs_tsm(report_data) {
                 Ok(evidence) => return Ok(evidence),
                 Err(e) => {
-                    eprintln!("[bountynet/snp] configfs-tsm failed ({e}), falling back to ioctl");
+                    eprintln!("[uq/snp] configfs-tsm failed ({e}), falling back to ioctl");
                 }
             }
         }

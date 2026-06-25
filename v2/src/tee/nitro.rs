@@ -118,7 +118,7 @@ impl TeeProvider for NitroProvider {
         match response {
             Response::Attestation { document } => {
                 eprintln!(
-                    "[bountynet/nitro] Attestation document: {} bytes, RSA pubkey: {} bytes",
+                    "[uq/nitro] Attestation document: {} bytes, RSA pubkey: {} bytes",
                     document.len(),
                     rsa_pub_der.as_bytes().len()
                 );
@@ -163,7 +163,7 @@ pub fn kms_decrypt(private_key_der: &[u8], cms_bytes: &[u8]) -> Result<Vec<u8>, 
         .map_err(|e| TeeError::InvalidResponse(format!("CMS parse: {e}")))?;
 
     eprintln!(
-        "[bountynet/kms] CMS: encrypted_key={} bytes, iv={} bytes, content={} bytes",
+        "[uq/kms] CMS: encrypted_key={} bytes, iv={} bytes, content={} bytes",
         cms.encrypted_key.len(),
         cms.iv.len(),
         cms.encrypted_content.len()

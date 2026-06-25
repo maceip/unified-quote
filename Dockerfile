@@ -13,6 +13,7 @@ FROM rust:1.94-bookworm AS builder
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src/ src/
+COPY v2/ v2/
 
 # Build in release mode
 RUN cargo build --release --bin bountynet-shim && \

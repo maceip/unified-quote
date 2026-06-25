@@ -28,8 +28,8 @@
 //! What the live hardware test adds on top is exactly and only the
 //! signature verification — everything else is exercised here.
 
-use bountynet::eat::{BuildComponents, EatToken};
-use bountynet::quote::Platform;
+use unified_quote::eat::{BuildComponents, EatToken};
+use unified_quote::quote::Platform;
 use sha2::{Digest, Sha256};
 
 /// SNP-shaped quote: 1152 bytes, `report_data` slot at offset 0x50.
