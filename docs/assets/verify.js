@@ -1,4 +1,4 @@
-// Runcard: in-browser Value X verifier for this repo.
+// unified-quote: in-browser Value X verifier for this repo.
 //
 // Mirrors the algorithm in v2/src/main.rs::compute_tree_hash + collect_hashes,
 // which is the version that actually runs inside the TDX runner during
@@ -25,7 +25,7 @@
   // --------------------------------------------------------------------------
   // Config — these mirror v2's compute_tree_hash / collect_hashes
   // --------------------------------------------------------------------------
-  const REPO = "maceip/runcards";
+  const REPO = "maceip/unified-quote";
   // The directory the build hashes is whatever you pass as
   // <source-dir>. The ouroboros run used `v2`, so that's our default — it
   // reproduces the signed Value X when walked at the right commit.

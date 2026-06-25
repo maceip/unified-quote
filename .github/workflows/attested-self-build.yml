@@ -1,9 +1,9 @@
 name: Attested self-build (the ouroboros)
 
-# This workflow is the load-bearing one: Runcard builds itself
+# This workflow is the load-bearing one: unified-quote builds itself
 # inside a TEE and produces a hardware attestation of its own source
 # tree. The runner is a GCP TDX instance registered as a self-hosted
-# runner for this repo. Any future release of Runcard is provably
+# runner for this repo. Any future release of unified-quote is provably
 # an attested build of a known Value X, signed by the Intel TDX
 # module and verifiable end-to-end.
 #
@@ -34,14 +34,14 @@ jobs:
           uname -a
           echo "TEE device probe:"
           ls -la /dev/tdx_guest /sys/kernel/config/tsm/report 2>&1 || true
-          BIN="$(command -v runcard || command -v bountynet || true)"
+          BIN="$(command -v uq || command -v bountynet || true)"
           if [ -z "$BIN" ]; then
-            echo "No runcard or legacy bountynet binary on runner"
+            echo "No uq or legacy bountynet binary on runner"
             exit 1
           fi
-          echo "Runcard binary: $BIN"
+          echo "unified-quote binary: $BIN"
           "$BIN" 2>&1 | head -3 || true
-          echo "RUNCARD_BIN=$BIN" >> "$GITHUB_ENV"
+          echo "UQ_BIN=$BIN" >> "$GITHUB_ENV"
 
       - name: Prepare Rust toolchain
         run: |
@@ -72,7 +72,7 @@ jobs:
           set -euo pipefail
           rm -rf attest-out
           mkdir -p attest-out
-          sudo env "PATH=$PATH" "RUSTUP_HOME=$RUSTUP_HOME" "CARGO_HOME=$CARGO_HOME" "$RUNCARD_BIN" build v2 \
+          sudo env "PATH=$PATH" "RUSTUP_HOME=$RUSTUP_HOME" "CARGO_HOME=$CARGO_HOME" "$UQ_BIN" build v2 \
             --cmd "$CARGO_BIN build --release" \
             --output "$GITHUB_WORKSPACE/attest-out"
           echo "--- output ---"

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Re-verify each registered node with `runcard check` and write docs/status/nodes.json.
+"""Re-verify each registered node with `uq check` and write docs/status/nodes.json.
 
 Reads a node config (deploy/nodes.config.json), runs the prebuilt verifier
 against every node that has an `endpoint`, parses the human-readable
-`[runcard]` output, and emits the live status JSON consumed by docs/live.html.
+`[uq]` output, and emits the live status JSON consumed by docs/live.html.
 
 Verifier-only: this runs on an ordinary CI runner with no TEE. It just opens an
 attested-TLS connection, pulls the EAT from the cert, and re-checks the
@@ -16,7 +16,7 @@ import re
 import subprocess
 import sys
 
-RUNCARD_BIN = os.environ.get("RUNCARD_BIN", "dist/bountynet-linux-x86_64")
+UQ_BIN = os.environ.get("UQ_BIN", "dist/uq-linux-x86_64")
 NODES_CONFIG = os.environ.get("NODES_CONFIG", "deploy/nodes.config.json")
 STATUS_OUT = os.environ.get("STATUS_OUT", "docs/status/nodes.json")
 CHECK_TIMEOUT = int(os.environ.get("CHECK_TIMEOUT", "45"))
@@ -37,7 +37,7 @@ def now_iso():
 
 
 def parse_check_output(text):
-    """Extract structured fields from `runcard check` stderr/stdout."""
+    """Extract structured fields from `uq check` stderr/stdout."""
     out = {
         "value_x": None,
         "value_x_short": None,
@@ -49,7 +49,7 @@ def parse_check_output(text):
     }
     for raw in text.splitlines():
         line = raw.strip()
-        line = re.sub(r"^\[runcard\]\s*", "", line)
+        line = re.sub(r"^\[uq\]\s*", "", line)
 
         m = re.match(r"Platform:\s*Some\((\w+)\)", line)
         if m:
@@ -90,7 +90,7 @@ def check_node(endpoint):
     """Run the verifier. Returns (verdict, detail, parsed)."""
     try:
         proc = subprocess.run(
-            [RUNCARD_BIN, "check", endpoint],
+            [UQ_BIN, "check", endpoint],
             capture_output=True,
             text=True,
             timeout=CHECK_TIMEOUT,
@@ -98,7 +98,7 @@ def check_node(endpoint):
     except subprocess.TimeoutExpired:
         return "offline", f"no response within {CHECK_TIMEOUT}s", {}
     except FileNotFoundError:
-        return "failed", f"verifier not found: {RUNCARD_BIN}", {}
+        return "failed", f"verifier not found: {UQ_BIN}", {}
 
     combined = (proc.stderr or "") + "\n" + (proc.stdout or "")
     parsed = parse_check_output(combined)

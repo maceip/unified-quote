@@ -295,7 +295,7 @@ dd {
   align-items: start;
 }
 
-.runcard-preview-frame,
+.uq-preview-frame,
 .repo-list {
   min-width: 0;
   background: var(--secondary-bg, #3e4637);

@@ -524,7 +524,7 @@ fn create_vsock_listener() -> Result<i32> {
     }
 
     let mut addr: libc::sockaddr_vm = unsafe { std::mem::zeroed() };
-    addr.svm_family = libc::AF_VSOCK as u16;
+    addr.svm_family = libc::AF_VSOCK as _;
     addr.svm_port = VSOCK_PORT;
     addr.svm_cid = libc::VMADDR_CID_ANY;
 
@@ -599,7 +599,7 @@ fn pipe_tcp_to_vsock(tcp: std::net::TcpStream, enclave_cid: u32) -> Result<()> {
     }
 
     let mut addr: libc::sockaddr_vm = unsafe { std::mem::zeroed() };
-    addr.svm_family = libc::AF_VSOCK as u16;
+    addr.svm_family = libc::AF_VSOCK as _;
     addr.svm_port = VSOCK_PORT;
     addr.svm_cid = enclave_cid;
 

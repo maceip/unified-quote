@@ -1,4 +1,4 @@
-name: 'runcard build'
+name: 'uq build'
 description: 'Attested build inside a TEE. Produces a hardware-signed receipt that this source became this artifact.'
 author: 'maceip'
 
@@ -13,7 +13,7 @@ inputs:
   output:
     description: 'Output directory for attestation + artifact'
     required: false
-    default: './runcard-out'
+    default: './uq-out'
 
 outputs:
   value_x:
@@ -28,45 +28,45 @@ outputs:
 runs:
   using: 'composite'
   steps:
-    - name: Install runcard
+    - name: Install uq
       shell: bash
       run: |
         set -euo pipefail
 
-        if ! command -v runcard &>/dev/null; then
-          echo "Installing runcard..."
-          curl -sSfL https://github.com/maceip/runcards/releases/latest/download/runcard-linux-x86_64 -o /usr/local/bin/runcard || {
-            echo "No prebuilt binary. Building runcard from source..."
+        if ! command -v uq &>/dev/null; then
+          echo "Installing uq..."
+          curl -sSfL https://github.com/maceip/unified-quote/releases/latest/download/uq-linux-x86_64 -o /usr/local/bin/uq || {
+            echo "No prebuilt binary. Building uq from source..."
             ACTION_ROOT="${{ github.action_path }}/.."
-            cargo build --release --manifest-path "$ACTION_ROOT/Cargo.toml" --bin runcard
-            cp "$ACTION_ROOT/target/release/runcard" /usr/local/bin/runcard
+            cargo build --release --manifest-path "$ACTION_ROOT/Cargo.toml" --bin uq
+            cp "$ACTION_ROOT/target/release/uq" /usr/local/bin/uq
           }
-          chmod +x /usr/local/bin/runcard
+          chmod +x /usr/local/bin/uq
         fi
-        runcard 2>&1 | head -1
+        uq 2>&1 | head -1
 
     - name: Attested build
       shell: bash
       id: build
       env:
-        RUNCARD_SOURCE: ${{ inputs.source }}
-        RUNCARD_CMD: ${{ inputs.cmd }}
-        RUNCARD_OUTPUT: ${{ inputs.output }}
+        UQ_SOURCE: ${{ inputs.source }}
+        UQ_CMD: ${{ inputs.cmd }}
+        UQ_OUTPUT: ${{ inputs.output }}
       run: |
         set -euo pipefail
 
-        OUTPUT="$RUNCARD_OUTPUT"
+        OUTPUT="$UQ_OUTPUT"
         mkdir -p "$OUTPUT"
 
-        ARGS=(build "$RUNCARD_SOURCE" --output "$OUTPUT")
-        if [ -n "$RUNCARD_CMD" ]; then
-          ARGS+=(--cmd "$RUNCARD_CMD")
+        ARGS=(build "$UQ_SOURCE" --output "$OUTPUT")
+        if [ -n "$UQ_CMD" ]; then
+          ARGS+=(--cmd "$UQ_CMD")
         fi
 
-        printf 'Running: runcard'
+        printf 'Running: uq'
         printf ' %q' "${ARGS[@]}"
         printf '\n'
-        runcard "${ARGS[@]}"
+        uq "${ARGS[@]}"
 
         # Parse attestation for outputs
         if [ -f "$OUTPUT/attestation.json" ]; then
@@ -80,7 +80,7 @@ runs:
           echo "platform=$PLATFORM" >> $GITHUB_OUTPUT
           echo "domain=$DOMAIN" >> $GITHUB_OUTPUT
 
-          echo "### Runcard attested build" >> $GITHUB_STEP_SUMMARY
+          echo "### unified-quote attested build" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY

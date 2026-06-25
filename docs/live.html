@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Runcard - live node status</title>
+  <title>unified-quote - live node status</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="assets/webtui/cs.css">
-  <link rel="stylesheet" href="assets/runcard.css?v=20260517">
+  <link rel="stylesheet" href="assets/uq.css?v=20260517">
   <style>
     .live-wrap { max-width: 1100px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
     .live-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.75rem 1.25rem; margin-bottom: 0.5rem; }
@@ -29,9 +29,9 @@
 </head>
 <body>
   <header class="site-header">
-    <a class="brand" href="index.html" aria-label="Runcard home">
+    <a class="brand" href="index.html" aria-label="unified-quote home">
       <span class="brand-mark">RC</span>
-      <span>Runcard</span>
+      <span>unified-quote</span>
     </a>
     <nav is-="toolbar" class="top-nav" aria-label="Primary navigation">
       <a href="index.html">overview</a>
@@ -47,7 +47,7 @@
     </div>
     <p class="lede" style="margin-top:0.25rem;">
       Each node below is independently re-verified by a scheduled GitHub workflow
-      that runs <code>runcard check</code> against its attested-TLS endpoint. The
+      that runs <code>uq check</code> against its attested-TLS endpoint. The
       verdict reflects a fresh hardware-quote verification, not a static claim.
     </p>
     <p class="live-meta" id="meta">loading status&hellip;</p>

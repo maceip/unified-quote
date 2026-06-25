@@ -21,8 +21,8 @@ provider.
 
 ```bash
 # verifier only — no tee required (v2/)
-cargo build --release --bin runcard
-./target/release/runcard check https://<host>/
+cargo build --release --bin uq
+./target/release/uq check https://<host>/
 ```
 
 ## platform support

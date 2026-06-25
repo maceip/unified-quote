@@ -5,11 +5,7 @@ edition = "2021"
 description = "Attested builds: source → artifact, proven by hardware"
 
 [[bin]]
-name = "runcard"
-path = "src/main.rs"
-
-[[bin]]
-name = "bountynet"
+name = "uq"
 path = "src/main.rs"
 
 [features]

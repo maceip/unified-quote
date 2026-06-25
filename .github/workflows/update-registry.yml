@@ -89,8 +89,8 @@ jobs:
       - name: Commit registry update
         run: |
           set -euo pipefail
-          git config user.name "runcard-bot"
-          git config user.email "bot@runcard.dev"
+          git config user.name "uq-bot"
+          git config user.email "unified-quote-bot@users.noreply.github.com"
           git add v2/registry
           git diff --cached --quiet || git commit -m "registry: update Value X for ${GITHUB_SHA::7} [skip ci]"
           git push

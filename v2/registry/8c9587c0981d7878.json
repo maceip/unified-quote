@@ -2,7 +2,7 @@
   "approved_at": "2026-05-17T15:49:48Z",
   "artifact_hash": "fce771476fff3f3557ea2582dbfa000beb547656a41fa3ed0616088c57d0870d70496301a20ea1b14157cafb567de67f",
   "attestation_cbor_sha256": "f68ea932c42fe3bf09b9d60168fae3a17efd042631aa0f10d9834e1d6d95d48c",
-  "notes": "Auto-registered from attested self-build workflow run 25995401671: https://github.com/maceip/runcards/actions/runs/25995401671",
+  "notes": "Auto-registered from attested self-build workflow run 25995401671: https://github.com/maceip/cvm-agent/actions/runs/25995401671",
   "platform_measurements": {
     "tdx_mrtd": "8370d8f6d02f2d13e211e91c93fde923049522b241425a29a7bf0071ef49b250af4ef49d852fa3e10065d1b51dfce8fb"
   },

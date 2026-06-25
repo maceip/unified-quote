@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ===========================================================================
-# Deploy an AWS AMD SEV-SNP instance for a live Runcard node.
+# Deploy an AWS AMD SEV-SNP instance for a live unified-quote node.
 #
 # SEV-SNP on AWS exposes /dev/sev-guest to the guest, and SNP_GET_EXT_REPORT
 # returns the VCEK cert table inline — so the node produces a fully
@@ -18,14 +18,14 @@ set -euo pipefail
 # Optional environment overrides:
 #   AWS_REGION=us-east-2
 #   INSTANCE_TYPE=c6a.xlarge        # AMD, SEV-SNP capable
-#   KEY_NAME=runcard-snp
+#   KEY_NAME=uq-snp
 #   CREATE_KEY=1                    # generate KEY_NAME.pem locally if missing
 # ===========================================================================
 
 AWS_REGION="${AWS_REGION:-us-east-2}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-c6a.xlarge}"
-KEY_NAME="${KEY_NAME:-runcard-snp}"
-SG_NAME="${SG_NAME:-runcard-snp-sg}"
+KEY_NAME="${KEY_NAME:-uq-snp}"
+SG_NAME="${SG_NAME:-uq-snp-sg}"
 CREATE_KEY="${CREATE_KEY:-1}"
 
 echo "=== Deploying AWS SEV-SNP node ==="
@@ -63,7 +63,7 @@ SG_ID="$(aws ec2 describe-security-groups --region "${AWS_REGION}" \
     --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "None")"
 if [ "${SG_ID}" = "None" ] || [ -z "${SG_ID}" ]; then
     SG_ID="$(aws ec2 create-security-group --region "${AWS_REGION}" \
-        --group-name "${SG_NAME}" --description "Runcard SNP node" \
+        --group-name "${SG_NAME}" --description "unified-quote SNP node" \
         --query 'GroupId' --output text)"
     aws ec2 authorize-security-group-ingress --region "${AWS_REGION}" \
         --group-id "${SG_ID}" --protocol tcp --port 22 --cidr 0.0.0.0/0 >/dev/null
@@ -80,7 +80,7 @@ INSTANCE_ID="$(aws ec2 run-instances --region "${AWS_REGION}" \
     --security-group-ids "${SG_ID}" \
     --cpu-options AmdSevSnp=enabled \
     --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":30}}]' \
-    --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=runcard-snp}]' \
+    --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=uq-snp}]' \
     --query 'Instances[0].InstanceId' --output text)"
 echo "  Instance: ${INSTANCE_ID}"
 
@@ -95,11 +95,11 @@ echo "  Instance:  ${INSTANCE_ID}"
 echo "  Public IP: ${PUBLIC_IP}"
 echo ""
 echo "Next: copy the verifier + a source tree, then build/run/check:"
-echo "  scp -i ${KEY_NAME}.pem dist/bountynet-linux-x86_64 ubuntu@${PUBLIC_IP}:~/runcard"
+echo "  scp -i ${KEY_NAME}.pem dist/uq-linux-x86_64 ubuntu@${PUBLIC_IP}:~/uq"
 echo "  ssh -i ${KEY_NAME}.pem ubuntu@${PUBLIC_IP}"
 echo "    ls /dev/sev-guest /sys/kernel/config/tsm/report   # at least one must exist"
-echo "    sudo ./runcard build ~/source --cmd 'echo build' --output ~/out"
-echo "    sudo ./runcard run ~/source --attestation ~/out/attestation.cbor   # serves :443"
+echo "    sudo ./uq build ~/source --cmd 'echo build' --output ~/out"
+echo "    sudo ./uq run ~/source --attestation ~/out/attestation.cbor   # serves :443"
 echo ""
 echo "Then register the node for the live dashboard by setting its endpoint in"
 echo "deploy/nodes.config.json:  \"endpoint\": \"https://${PUBLIC_IP}/\""

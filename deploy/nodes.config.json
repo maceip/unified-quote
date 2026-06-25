@@ -1,5 +1,5 @@
 {
-  "_comment": "Source of truth for live nodes. The report-live-quotes workflow reads this, runs `runcard check` against each non-null endpoint, and writes docs/status/nodes.json. Fill in `endpoint` (https://host[:port]/) once a VM is provisioned and serving stage 1.",
+  "_comment": "Source of truth for live nodes. The report-live-quotes workflow reads this, runs `uq check` against each non-null endpoint, and writes docs/status/nodes.json. Fill in `endpoint` (https://host[:port]/) once a VM is provisioned and serving stage 1.",
   "nodes": [
     {
       "id": "aws-nitro-use2",
