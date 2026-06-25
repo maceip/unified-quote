@@ -40,6 +40,16 @@ cargo build --release --bin uq
 - quote format — **unified-quote** (here)
 - in-tee runtime — [attested-workload](https://github.com/maceip/attested-workload)
 
+this is the base layer. the others depend on it directly — it is the `uq`
+verifier in the `v2/` workspace member crate `unified-quote`:
+
+```toml
+unified-quote = { git = "https://github.com/maceip/unified-quote", package = "unified-quote" }
+```
+
+attestation-service issues/verifies with it, attested-workload emits + cross-
+verifies its receipts under it, and cvm-agent meshes the whole stack on top.
+
 pages: https://maceip.github.io/unified-quote/
 
 ## license
