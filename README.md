@@ -45,3 +45,22 @@ pages: https://maceip.github.io/unified-quote/
 ## license
 
 mit
+
+<!-- agentic-canon -->
+## agentic canon
+
+<table>
+<tr>
+<td width="200" valign="top"><img src="docs/assets/canon-scroll.png" width="180" alt="agentic canon" /></td>
+<td valign="top">
+
+**no proof, no privilege.**
+
+1. **make behavior enforceable.** replace conventions with hardware quotes, attested gates, and runtime checks.
+2. **turn failures into evolution.** each failed verification hardens the shared verifier, not just one deployment.
+3. **compose through proofs.** every layer declares what it accepts, returns, and can prove.
+4. **carry trust forward.** a proof from one stage becomes the ground the next stands on.
+
+</td>
+</tr>
+</table>
