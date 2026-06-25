@@ -1,334 +1,90 @@
 <!doctype html>
-<html lang="en" data-webtui-theme="cs16">
+<html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Runcard - proof before privilege</title>
-  <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="assets/webtui/cs.css">
-  <link rel="stylesheet" href="assets/runcard.css?v=20260517">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>unified-quote // confidential compute</title>
+<style>
+:root{
+  --bg:#080a09; --panel:#0d100e; --line:#1c241e; --fg:#c6d2c6;
+  --dim:#6f7e70; --acc:#5ef08a; --amber:#ffb454; --hot:#ff5f6e;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--fg);
+  font-family:"SFMono-Regular",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased}
+body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:99;
+  background:repeating-linear-gradient(0deg,rgba(0,0,0,0) 0,rgba(0,0,0,0) 2px,rgba(0,0,0,.18) 3px);
+  opacity:.35;mix-blend-mode:multiply}
+a{color:var(--acc);text-decoration:none}
+a:hover{text-decoration:underline}
+.wrap{max-width:760px;margin:0 auto;padding:40px 22px 80px}
+.bar{display:flex;justify-content:space-between;align-items:center;
+  color:var(--dim);font-size:12px;letter-spacing:.08em;border-bottom:1px solid var(--line);
+  padding-bottom:10px;margin-bottom:34px}
+.bar .dot{color:var(--acc)}
+.tag{color:var(--amber)}
+h1{font-size:40px;margin:0;letter-spacing:-.02em;font-weight:600}
+.role{display:inline-block;margin-top:14px;border:1px solid var(--line);
+  background:var(--panel);color:var(--acc);padding:3px 10px;border-radius:3px;font-size:12px;letter-spacing:.06em}
+.tagline{color:var(--dim);margin:10px 0 26px;font-size:15px}
+.summary{margin:0 0 30px}
+.box{border:1px solid var(--line);background:var(--panel);border-radius:5px;
+  padding:0;margin:26px 0;position:relative}
+.box .hd{border-bottom:1px solid var(--line);padding:8px 14px;color:var(--dim);
+  font-size:12px;letter-spacing:.1em;text-transform:lowercase}
+.box pre{margin:0;padding:16px 14px;overflow-x:auto;font-size:13.5px;color:var(--fg)}
+.box pre .p{color:var(--acc)}
+.box pre .ok{color:var(--acc)}
+.box pre .c{color:var(--dim)}
+.stack{list-style:none;margin:0;padding:0}
+.stack li{display:flex;gap:12px;padding:9px 14px;border-bottom:1px solid var(--line);align-items:baseline}
+.stack li:last-child{border-bottom:0}
+.stack .lyr{color:var(--dim);min-width:160px;font-size:12px;letter-spacing:.05em}
+.stack .here{color:var(--amber)}
+.stack .here .lyr{color:var(--amber)}
+.mark{color:var(--acc)}
+footer{margin-top:46px;border-top:1px solid var(--line);padding-top:16px;
+  color:var(--dim);font-size:12px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px}
+h2{font-size:13px;letter-spacing:.12em;color:var(--dim);text-transform:lowercase;
+  margin:34px 0 10px;font-weight:600}
+</style>
 </head>
 <body>
-  <header class="site-header">
-    <a class="brand" href="#top" aria-label="Runcard home">
-      <span class="brand-mark">RC</span>
-      <span>Runcard</span>
-    </a>
-    <nav is-="toolbar" class="top-nav" aria-label="Primary navigation">
-      <a href="#chain">chain</a>
-      <a href="#uses">uses</a>
-      <a href="#card">card</a>
-      <a href="#proof">proof</a>
-      <a href="#repo">repo</a>
-      <a href="live.html">live</a>
-      <a href="https://github.com/maceip/unified-quote">github</a>
-    </nav>
-  </header>
+<div class="wrap">
+  <div class="bar">
+    <span><span class="dot">●</span> confidential compute</span>
+    <span class="tag">rooted in silicon, not a provider</span>
+  </div>
 
-  <main id="top">
-    <section class="hero band">
-      <div class="hero-copy">
-        <span is-="badge" variant-="primary">attested runtime card</span>
-        <h1>Run cards for software that asks for power.</h1>
-        <p class="lede">
-          Runcard turns this repo's Stage 0 and Stage 1 attestation chain into
-          a small object an app can check before it releases a token, secret,
-          deploy right, filesystem tool, or customer data.
-        </p>
-        <p>
-          The technical core is already here: a TEE build receipt, a runtime
-          receipt, attested TLS, hardware quote verification, and a chain walk
-          back to the source identity called <code>Value X</code>.
-        </p>
-        <div class="hero-actions">
-          <a is-="button" variant-="primary" href="#chain">inspect chain</a>
-          <a is-="button" box-="square" href="#proof">run browser proof</a>
-        </div>
-      </div>
+  <h1>unified-quote</h1>
+  <div class="role">quote format</div>
+  <div class="tagline">one attestation receipt across cloud tees</div>
 
-      <aside class="hero-console" is-="tilt" glare- data-tilt data-tilt-max="5" aria-label="Runcard proof summary">
-        <div class="window-title">
-          <span>runcard://support-flow</span>
-          <span is-="badge" variant-="success">verified</span>
-        </div>
-<pre is-="pre" size-="small">stage0: quote binds source_hash + artifact_hash + value_x
-stage1: quote binds previous_receipt + tls_spki_hash
-client: cert carries EAT, verifier walks chain
-gate: policy decides whether privilege is released</pre>
-        <img src="assets/runcard-card.svg" alt="Runcard verified card preview" class="hero-card-image">
-      </aside>
-    </section>
+  <p class="summary">a single eat-based quote format and verifier. one receipt, rooted in the cpu vendor, verifies identically on aws nitro, amd sev-snp, and intel tdx — on any cloud or bare metal.</p>
 
-    <section id="chain" class="band">
-      <div class="section-heading">
-        <span is-="badge" variant-="info">implementation</span>
-        <h2>The card is backed by the existing proof chain.</h2>
-        <p>
-          Runcard is not a new claim on top of the codebase. It is the developer
-          surface for the chain implemented under <code>v2/</code>.
-        </p>
-      </div>
+  <div class="box">
+    <div class="hd">$ unified-quote</div>
+    <pre><span class="c"># verifier only — no tee required</span>
+<span class="p">$</span> cargo build --release --bin runcard
+<span class="p">$</span> runcard check https://&lt;host&gt;/
+<span class="ok">verified</span> · quote re-checked against pinned vendor root</pre>
+  </div>
 
-      <div class="chain-grid">
-        <article is-="card" box-="square" class="chain-card">
-          <div is-="card-title">Stage 0 / build</div>
-          <p>Runs in TEE hardware, freezes the source tree, runs the build, hashes
-          the artifact, computes <code>Value X</code>, and emits EAT CBOR.</p>
-          <ul class="plain-list">
-            <li>source hash before build</li>
-            <li>read-only source snapshot</li>
-            <li>artifact hash after build</li>
-            <li>TEE quote over EAT binding bytes</li>
-          </ul>
-        </article>
+  <h2>the stack</h2>
+  <div class="box">
+    <ul class="stack">
+      <li><span class="lyr">agent platform</span><a href="https://maceip.github.io/cvm-agent/">cvm-agent</a></li>
+      <li><span class="lyr">attestation service</span><a href="https://maceip.github.io/attestation-service/">attestation-service</a></li>
+      <li class="here"><span class="lyr">quote format</span><span class="mark">▸ unified-quote <span style="color:var(--dim)">(here)</span></span></li>
+      <li><span class="lyr">in-tee runtime</span><a href="https://maceip.github.io/attested-workload/">attested-workload</a></li>
+    </ul>
+  </div>
 
-        <article is-="card" box-="square" class="chain-card">
-          <div is-="card-title">Stage 1 / runtime</div>
-          <p>Loads the Stage 0 receipt, verifies it, recomputes <code>Value X</code>
-          from disk, generates a TLS key inside the TEE, and collects a fresh
-          runtime quote.</p>
-          <ul class="plain-list">
-            <li>previous attestation hash</li>
-            <li>runtime quote bound to TLS key</li>
-            <li>attested TLS certificate</li>
-            <li>chain continuity check</li>
-          </ul>
-        </article>
-
-        <article is-="card" box-="square" class="chain-card">
-          <div is-="card-title">Client / gate</div>
-          <p>Fetches the running service, extracts the EAT from the TLS cert,
-          verifies the platform quote, checks the SPKI binding, walks the
-          previous receipt, then applies project policy.</p>
-          <ul class="plain-list">
-            <li>Intel TDX, AMD SEV-SNP, AWS Nitro paths</li>
-            <li>pinned vendor roots</li>
-            <li>stable Value X across stages</li>
-            <li>allow or deny privilege</li>
-          </ul>
-        </article>
-      </div>
-    </section>
-
-    <section id="uses" class="band split">
-      <div>
-        <div class="section-heading compact">
-          <span is-="badge" variant-="warning">where it matters</span>
-          <h2>Use it at the boundary where software gets authority.</h2>
-        </div>
-        <p>
-          Most developers do not wake up caring about attestation. They do care
-          when a model-controlled workflow is about to get a write token, a
-          deploy job, a shell, or production data. Runcard makes that boundary
-          checkable.
-        </p>
-      </div>
-
-      <div is-="tabs" class="usage-tabs">
-        <div is-="tabs-list" role="tablist" aria-label="Runcard use cases">
-          <button id="tab-app" is-="tabs-trigger" type="button" role="tab" aria-selected="true" aria-controls="panel-app" data-tab="app">app gate</button>
-          <button id="tab-mcp" is-="tabs-trigger" type="button" role="tab" aria-selected="false" aria-controls="panel-mcp" data-tab="mcp">mcp</button>
-          <button id="tab-ci" is-="tabs-trigger" type="button" role="tab" aria-selected="false" aria-controls="panel-ci" data-tab="ci">ci</button>
-          <button id="tab-secrets" is-="tabs-trigger" type="button" role="tab" aria-selected="false" aria-controls="panel-secrets" data-tab="secrets">secrets</button>
-        </div>
-        <div class="tab-panels">
-          <section id="panel-app" class="tab-panel is-active" role="tabpanel" aria-labelledby="tab-app" data-panel="app">
-<pre is-="pre" size-="small">const verdict = await runcard.verify(target, {
-  source: "github.com/acme/support-flow",
-  ref: "refs/heads/main",
-  requireReviewedCommit: true
-});
-
-if (verdict.ok) {
-  await tools.enable("write:issues");
-}</pre>
-          </section>
-          <section id="panel-mcp" class="tab-panel" role="tabpanel" aria-labelledby="tab-mcp" data-panel="mcp" hidden>
-<pre is-="pre" size-="small">tools:
-  verify_runtime
-  explain_receipt
-  should_release_secret
-  verify_artifact
-
-deny:
-  - shell.exec
-  - database.write
-  - browser.autofill</pre>
-          </section>
-          <section id="panel-ci" class="tab-panel" role="tabpanel" aria-labelledby="tab-ci" data-panel="ci" hidden>
-<pre is-="pre" size-="small">- uses: maceip/unified-quote/v2/action@main
-  with:
-    source: .
-    cmd: npm ci && npm test && npm run build
-
-runcard gate --receipt proof-receipt.json --policy .runcard.yml</pre>
-          </section>
-          <section id="panel-secrets" class="tab-panel" role="tabpanel" aria-labelledby="tab-secrets" data-panel="secrets" hidden>
-<pre is-="pre" size-="small">source: github.com/acme/support-flow
-ref: refs/heads/main
-allow:
-  secrets:
-    - PROD_SUPPORT_TOKEN
-    - STRIPE_READONLY_KEY</pre>
-          </section>
-        </div>
-      </div>
-    </section>
-
-    <section id="card" class="band card-band">
-      <div class="section-heading">
-        <span is-="badge" variant-="success">shareable object</span>
-        <h2>The output should be a card, not a paragraph about trust.</h2>
-        <p>
-          A Runcard is the small thing a README, package page, PR check, agent
-          directory, or service dashboard can show. The receipt behind it stays
-          machine-verifiable.
-        </p>
-      </div>
-
-      <div class="card-layout">
-        <div is-="frame" box-="square" class="runcard-preview-frame">
-          <div is-="frame-title">runcard.svg</div>
-          <img src="assets/runcard-card.svg" alt="Runcard verified card preview" class="badge-preview">
-        </div>
-
-        <table class="card-fields">
-          <thead>
-            <tr><th>field</th><th>meaning</th></tr>
-          </thead>
-          <tbody>
-            <tr><td>subject</td><td>the service, workflow, MCP server, or package asking for privilege</td></tr>
-            <tr><td>source</td><td>repo, commit, and optional release ref</td></tr>
-            <tr><td>runtime</td><td>platform quote plus attested TLS binding</td></tr>
-            <tr><td>policy</td><td>the local rule that allowed or denied access</td></tr>
-            <tr><td>receipt</td><td>EAT CBOR and JSON summary for verifiers</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <section id="proof" class="band browser-proof">
-      <div class="section-heading">
-        <span is-="badge" variant-="info">browser proof</span>
-        <h2>Recompute the archived Value X in this page.</h2>
-        <p>
-          This widget walks the GitHub tree and reproduces the source identity
-          signed in the archived ouroboros run. Hardware quote verification
-          remains in the Rust verifier.
-        </p>
-      </div>
-
-      <div id="verifier" is-="card" box-="square">
-        <div is-="card-header">
-          <div is-="card-title">Value X verifier</div>
-          <div is-="card-description">sha384 tree identity for <code>v2</code> at commit <code>2593db6</code></div>
-        </div>
-        <div is-="card-content">
-          <div class="verify-controls">
-            <label for="verify-path">path</label>
-            <select id="verify-path">
-              <option value="v2" selected>v2 (full, matches ouroboros)</option>
-              <option value="v2/src">v2/src (quick demo, will not match)</option>
-            </select>
-            <label for="verify-ref">git ref</label>
-            <input id="verify-ref" type="text" value="2593db6" placeholder="commit / branch / tag">
-            <button id="verify-run" type="button" variant-="primary">compute</button>
-            <button id="verify-clear" type="button" box-="square">clear</button>
-          </div>
-          <div class="verify-status">
-            <span>status:</span>
-            <strong id="verify-phase">idle</strong>
-            <span>//</span>
-            <span id="verify-count">0 files</span>
-          </div>
-          <div id="verify-log" is-="scroll-area" class="verify-log"></div>
-          <div id="verify-result" class="verify-result" hidden>
-            <div class="verify-result-label">computed value x</div>
-            <div id="verify-result-hex" class="verify-result-hex"></div>
-            <div id="verify-compare" class="verify-compare"></div>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section id="repo" class="band split repo-band">
-      <div>
-        <div class="section-heading compact">
-          <span is-="badge" variant-="primary">code paths</span>
-          <h2>Where the claims live.</h2>
-        </div>
-        <p>
-          These files are the implementation surface the product language should
-          point back to. If the page says a thing, it should have a path here.
-        </p>
-      </div>
-
-      <div class="repo-list" is-="frame" box-="square">
-        <div is-="frame-title">v2/</div>
-        <a class="proof-link" href="https://github.com/maceip/unified-quote/blob/main/v2/src/eat.rs">
-          <span>src/eat.rs</span><span>EAT schema and binding bytes</span>
-        </a>
-        <a class="proof-link" href="https://github.com/maceip/unified-quote/blob/main/v2/src/quote/verify.rs">
-          <span>src/quote/verify.rs</span><span>TDX, SNP, and Nitro quote verification</span>
-        </a>
-        <a class="proof-link" href="https://github.com/maceip/unified-quote/blob/main/v2/src/net/attested_tls.rs">
-          <span>src/net/attested_tls.rs</span><span>EAT inside the TLS certificate</span>
-        </a>
-        <a class="proof-link" href="https://github.com/maceip/unified-quote/blob/main/v2/tests/hardware_regression.rs">
-          <span>tests/hardware_regression.rs</span><span>real hardware fixture verification</span>
-        </a>
-        <a class="proof-link" href="https://github.com/maceip/unified-quote/blob/main/v2/HARDWARE_VALIDATION.md">
-          <span>HARDWARE_VALIDATION.md</span><span>Stage 0 to Stage 1 runbook</span>
-        </a>
-      </div>
-    </section>
-
-    <section class="band">
-      <div class="section-heading">
-        <span is-="badge" variant-="warning">deployment pass</span>
-        <h2>Fresh receipts should come from real cloud runs.</h2>
-        <p>
-          The repo has the Stage 0/Stage 1 machinery and hardware fixtures. The
-          next credibility step is to rerun the deployments with current cloud
-          accounts and publish the resulting receipts.
-        </p>
-      </div>
-
-      <table class="cloud-table">
-        <thead>
-          <tr><th>platform</th><th>target pass</th><th>why it matters</th></tr>
-        </thead>
-        <tbody>
-          <tr><td>GCP TDX</td><td>Stage 0 + Stage 1 + check</td><td>fastest full chain validation</td></tr>
-          <tr><td>AWS Nitro</td><td>enclave build + attested TLS + KMS</td><td>strongest secret-release story</td></tr>
-          <tr><td>AWS SEV-SNP</td><td>Stage 0 + VCEK signature chain</td><td>common confidential VM path</td></tr>
-          <tr><td>Azure CVM</td><td>collector decision, then Stage 0</td><td>turn tested-not-verified into a supported path</td></tr>
-        </tbody>
-      </table>
-    </section>
-
-    <section class="band">
-      <details is-="accordion" box-="square">
-        <summary>Next useful pieces</summary>
-        <ul class="plain-list next-list">
-          <li>Fresh Stage 0/Stage 1 cloud receipts for GCP, AWS, and Azure.</li>
-          <li><code>proof-receipt.json</code> as the stable app-facing receipt summary.</li>
-          <li><code>runcard gate</code> for CI, deploy, and secret-release jobs.</li>
-          <li>GitHub check summaries that say exactly why a run can receive privilege.</li>
-          <li>MCP tools for runtime verification and receipt explanation.</li>
-          <li>Shadow builds so projects can get receipts without owning TEE hardware.</li>
-        </ul>
-      </details>
-    </section>
-  </main>
-
-  <footer class="site-footer">
-    <span>Runcard</span>
-    <span>proof before privilege</span>
-    <a href="https://github.com/maceip/unified-quote">github.com/maceip/unified-quote</a>
+  <footer>
+    <span><a href="https://github.com/maceip/unified-quote">github.com/maceip/unified-quote</a></span>
+    <span>aws nitro · amd sev-snp · intel tdx</span>
   </footer>
-
-  <script src="assets/runcard.js?v=20260517"></script>
-  <script src="assets/verify.js?v=20260517"></script>
+</div>
 </body>
 </html>
