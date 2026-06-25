@@ -60,15 +60,31 @@ pub fn fetch_vcek(
     }
 }
 
-/// Fetch the ASK + ARK cert chain for a product family.
+/// Fetch the ASK + ARK cert chain for a product family (VCEK endorsement).
 ///
 /// URL: /vcek/v1/{product}/cert_chain
 ///
 /// Returns (ASK DER, ARK DER).
 pub fn fetch_cert_chain(product: &str) -> Result<(Vec<u8>, Vec<u8>), String> {
-    let url = format!("{KDS_BASE}/vcek/v1/{product}/cert_chain");
+    fetch_cert_chain_kind(product, "vcek")
+}
 
-    eprintln!("[uq/kds] Fetching cert chain from AMD KDS: {url}");
+/// Fetch the intermediate + ARK cert chain for a product family for a given
+/// endorsement-key kind: `"vcek"` (per-chip) or `"vlek"` (cloud-provisioned).
+///
+/// VLEK-signed reports — used by AWS and Azure confidential VMs — are signed by
+/// a Versioned Loaded Endorsement Key whose intermediate (ASVK) + root (ARK) are
+/// published at `/vlek/v1/{product}/cert_chain`. The chip-specific VCEK endpoint
+/// cannot serve them (the chip_id is masked), so a verifier must select the
+/// right endpoint based on the report's signing-key field.
+///
+/// URL: /{kind}/v1/{product}/cert_chain
+///
+/// Returns (intermediate DER, ARK DER).
+pub fn fetch_cert_chain_kind(product: &str, kind: &str) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let url = format!("{KDS_BASE}/{kind}/v1/{product}/cert_chain");
+
+    eprintln!("[uq/kds] Fetching {kind} cert chain from AMD KDS: {url}");
 
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -105,13 +121,7 @@ pub fn extract_kds_params(report: &[u8]) -> Result<(String, Vec<u8>, u8, u8, u8,
         return Err(format!("Report too short: {} bytes", report.len()));
     }
 
-    // Version at offset 0x000 (4 bytes LE)
-    let version = u32::from_le_bytes(report[0..4].try_into().map_err(|_| "version bytes")?);
-    let product = match version {
-        2 => "Milan",
-        5 => "Genoa",
-        _ => return Err(format!("Unknown SNP version {version}")),
-    };
+    let product = snp_product(report)?;
 
     // CHIP_ID at offset 0x140 (64 bytes)
     let chip_id = report[0x140..0x180].to_vec();
@@ -132,6 +142,37 @@ pub fn extract_kds_params(report: &[u8]) -> Result<(String, Vec<u8>, u8, u8, u8,
         snp_spl,
         ucode_spl,
     ))
+}
+
+/// Determine the AMD product line (the KDS path segment) for an SNP report.
+///
+/// IMPORTANT: the product is a function of the CPU family/model, NOT the
+/// report *format* version (offset 0x000). Report formats >= 3 carry CPUID
+/// fields at offset 0x188 (`cpuid_fam_id`, `cpuid_mod_id`, `cpuid_step`);
+/// legacy v2 reports predate Genoa and are therefore always Milan.
+///
+/// Family/model → product (per AMD's KDS naming):
+///   - 0x19, model 0x00..=0x0F → Milan  (Zen 3, e.g. EPYC 7R13)
+///   - 0x19, model 0x10..=0x1F → Genoa  (Zen 4)
+///   - 0x1A, any model         → Turin  (Zen 5)
+pub fn snp_product(report: &[u8]) -> Result<&'static str, String> {
+    if report.len() < 0x18b {
+        return Err(format!("report too short for product detection: {} bytes", report.len()));
+    }
+    let fam = report[0x188];
+    let model = report[0x189];
+    // Legacy v2 reports leave 0x188 reserved (zero) — those are Milan-era.
+    if fam == 0 {
+        return Ok("Milan");
+    }
+    match (fam, model) {
+        (0x19, 0x00..=0x0f) => Ok("Milan"),
+        (0x19, 0x10..=0x1f) => Ok("Genoa"),
+        (0x1a, _) => Ok("Turin"),
+        _ => Err(format!(
+            "unknown AMD product: cpuid family {fam:#x} model {model:#x}"
+        )),
+    }
 }
 
 fn pem_to_der(pem_bytes: &[u8]) -> Option<Vec<u8>> {

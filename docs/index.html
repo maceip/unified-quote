@@ -138,6 +138,15 @@ footer a{color:var(--dim)} footer a:hover{color:var(--acc)}
 <span class="ok">verified</span> · quote re-checked against pinned vendor root</pre>
   </div>
 
+  <div class="card reveal" style="--d:.28s">
+    <div class="hd">$ live attestation &middot; aws sev-snp (milan, vlek)</div>
+    <pre><span class="c"># real quote, genuine hardware — not a fixture</span>
+<span class="p">$</span> uq verify deploy/live-snp/snp-verified.json
+binding <span class="ok">PASS</span> · quote binding <span class="ok">PASS</span> · measurement <span class="ok">PASS</span>
+signature chain <span class="ok">PASS</span>  <span class="c"># report → vlek → asvk → ark-milan (pinned)</span>
+measurement b756dde7&#8230;b8da7617</pre>
+  </div>
+
   <h2 class="reveal" style="--d:.3s">the stack</h2>
   <div class="card reveal" style="--d:.32s">
     <ul class="stack">

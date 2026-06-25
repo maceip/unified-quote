@@ -17,6 +17,27 @@ provider.
 - real quote verification for intel tdx, amd sev-snp, and aws nitro — each with
   its own evidence device, quote format, and pinned vendor root.
 
+## live attestation (verified)
+
+a real quote, minted on genuine hardware and verified end-to-end against the
+amd vendor root — not a fixture.
+
+- **node:** aws `c6a.xlarge`, us-east-2 — amd epyc 7r13 (milan), sev-snp at vmpl0
+  (instance `i-0280d827121bac1e5`, left running).
+- **signing key:** vlek (aws/azure cvms sign with a cloud-provisioned vlek, not a
+  per-chip vcek; chip_id is masked).
+- **chain:** report → vlek → asvk → **ark-milan** (pinned amd root).
+- **launch measurement:**
+  `b756dde72c548e42560ba6b43955b68c1239682104c78fa07989ed3d15478107cb0e0a2a9637604586b9615eb8da7617`
+
+re-verify the captured receipt yourself (fetches the vlek cert chain from amd kds):
+
+```bash
+cargo build --release --bin uq
+./target/release/uq verify deploy/live-snp/snp-verified.json
+# → binding PASS · quote binding PASS · measurement PASS · signature chain PASS
+```
+
 ## verify a live endpoint
 
 ```bash
@@ -30,7 +51,7 @@ cargo build --release --bin uq
 | platform | evidence | signature → pinned root |
 |---|---|---|
 | intel tdx | configfs-tsm · /dev/tdx-guest | ecdsa-p256 → intel sgx root ca |
-| amd sev-snp | /dev/sev-guest · configfs-tsm | ecdsa-p384 → amd ark (milan/genoa) |
+| amd sev-snp | /dev/sev-guest · configfs-tsm | ecdsa-p384 vcek/vlek → amd ark (milan/genoa) |
 | aws nitro | /dev/nsm (nsm api) | ecdsa-p384 → aws nitro root ca |
 
 ## the stack

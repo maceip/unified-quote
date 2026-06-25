@@ -4,6 +4,25 @@
   "schema": 1,
   "nodes": [
     {
+      "id": "aws-snp-use2",
+      "label": "AWS SEV-SNP (Milan, VLEK)",
+      "cloud": "aws",
+      "region": "us-east-2",
+      "platform": "SevSnp",
+      "endpoint": null,
+      "verdict": "pass",
+      "value_x": "d0a8fe682991fa08839d7916a36ad51845305f1689effe5ffa9f5cdfc100670d33ec6480c7af748f3b2d4db8fee63c84",
+      "value_x_short": "d0a8fe682991",
+      "measurements": {
+        "MEASUREMENT": "b756dde72c548e42560ba6b43955b68c1239682104c78fa07989ed3d15478107cb0e0a2a9637604586b9615eb8da7617"
+      },
+      "spki_binding": null,
+      "quote_signature": "pass",
+      "chain": "report -> VLEK -> ASVK -> ARK-Milan (pinned)",
+      "checked_at": "2026-06-25T23:20:00Z",
+      "detail": "captured on genuine c6a.xlarge (EPYC 7R13), VLEK-signed; full chain verified against pinned AMD Milan ARK. receipt: deploy/live-snp/snp-verified.json"
+    },
+    {
       "id": "aws-nitro-use2",
       "label": "AWS Nitro Enclave",
       "cloud": "aws",

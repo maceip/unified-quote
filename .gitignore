@@ -2,3 +2,5 @@
 *.swp
 *.swo
 .env
+# ssh keypairs from deploy scripts — never commit private keys
+*.pem

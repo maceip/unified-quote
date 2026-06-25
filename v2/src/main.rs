@@ -39,7 +39,7 @@ mod value_x;
 
 use value_x::compute_tree_hash;
 
-use sha2::{Digest, Sha256, Sha384};
+use sha2::{Digest, Sha384};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -1024,13 +1024,30 @@ fn cmd_verify(args: &[String]) -> anyhow::Result<()> {
         att_path.ok_or_else(|| anyhow::anyhow!("Usage: uq verify <attestation.json>"))?;
     let att_json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
 
-    verify_attestation_json(&att_json, source_dir.as_deref(), artifact_path.as_deref())
+    // The JSON view is a lossy projection of the EAT (no eat_nonce, eat_profile,
+    // tls_spki_hash, or chained previous_attestation), so the canonical binding
+    // can only be recomputed from the full token. Load the `.cbor` sibling and
+    // recompute `binding_bytes()` with the exact same code path the producer used
+    // — this is the same check `cross_verify.rs` and the attested-TLS verifier run.
+    let cbor_path = Path::new(&path).with_extension("cbor");
+    let canonical_binding: Option<[u8; 32]> = std::fs::read(&cbor_path)
+        .ok()
+        .and_then(|bytes| eat::EatToken::from_cbor(&bytes).ok())
+        .map(|tok| tok.binding_bytes());
+
+    verify_attestation_json(
+        &att_json,
+        source_dir.as_deref(),
+        artifact_path.as_deref(),
+        canonical_binding,
+    )
 }
 
 fn verify_attestation_json(
     att_json: &serde_json::Value,
     source_dir: Option<&Path>,
     artifact_path: Option<&Path>,
+    canonical_binding: Option<[u8; 32]>,
 ) -> anyhow::Result<()> {
     let platform_str = att_json["platform"].as_str().unwrap_or("");
     let ct_hex = att_json["source_hash"].as_str().unwrap_or("");
@@ -1045,23 +1062,34 @@ fn verify_attestation_json(
     eprintln!("[uq] A:  {a_hex}");
     eprintln!("[uq] X:  {x_hex}");
 
-    // Check 1: Verify binding hash
-    let ct = hex::decode(ct_hex)?;
-    let a = hex::decode(a_hex)?;
-    let x = hex::decode(x_hex)?;
-    let mut binding_input = Vec::new();
-    binding_input.extend_from_slice(&ct);
-    binding_input.extend_from_slice(&a);
-    binding_input.extend_from_slice(&x);
-    let expected_binding = hex::encode(Sha256::digest(&binding_input));
-
-    if expected_binding != binding_hex {
-        eprintln!("[uq] FAIL: binding hash mismatch");
-        eprintln!("[uq]   expected: {expected_binding}");
-        eprintln!("[uq]   got:      {binding_hex}");
-        std::process::exit(1);
+    // Check 1: Verify the committed binding is the canonical EatToken::binding_bytes().
+    // The binding commits to every claim in the EAT (version, profile, value_x,
+    // platform, tls_spki_hash, source_hash, artifact_hash, iat, nonce, previous_hash)
+    // — not just ct/a/x. It can therefore only be recomputed from the full token
+    // (the `.cbor` sibling), using the producer's own code. The lossy JSON cannot
+    // reconstruct it. Check 2 then proves the hardware committed to this same value
+    // via report_data, which is the cryptographic anchor.
+    match canonical_binding {
+        Some(expected) => {
+            let expected_hex = hex::encode(expected);
+            if expected_hex != binding_hex {
+                eprintln!("[uq] FAIL: binding hash mismatch");
+                eprintln!("[uq]   expected (eat.binding_bytes): {expected_hex}");
+                eprintln!("[uq]   got (attestation.binding):    {binding_hex}");
+                std::process::exit(1);
+            }
+            eprintln!("[uq] Binding hash: PASS (canonical EAT binding_bytes)");
+        }
+        None => {
+            eprintln!(
+                "[uq] Binding hash: SKIPPED — no .cbor sibling to recompute canonical binding"
+            );
+            eprintln!(
+                "[uq] WARNING: cannot recompute binding from lossy JSON alone; \
+                 relying on the quote report_data check below"
+            );
+        }
     }
-    eprintln!("[uq] Binding hash: PASS");
 
     // Check 2: Verify TEE quote
     let quote_bytes = hex::decode(quote_hex)?;

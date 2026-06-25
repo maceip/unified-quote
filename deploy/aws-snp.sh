@@ -33,7 +33,7 @@ echo "  Region:   ${AWS_REGION}"
 echo "  Type:     ${INSTANCE_TYPE} (AMD SEV-SNP)"
 echo ""
 
-if ! aws sts get-caller-identity --output none 2>/dev/null; then
+if ! aws sts get-caller-identity >/dev/null 2>&1; then
     echo "ERROR: AWS CLI is not authenticated." >&2
     exit 1
 fi

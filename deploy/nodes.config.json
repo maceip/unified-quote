@@ -2,6 +2,22 @@
   "_comment": "Source of truth for live nodes. The report-live-quotes workflow reads this, runs `uq check` against each non-null endpoint, and writes docs/status/nodes.json. Fill in `endpoint` (https://host[:port]/) once a VM is provisioned and serving stage 1.",
   "nodes": [
     {
+      "id": "aws-snp-use2",
+      "label": "AWS SEV-SNP (Milan, VLEK)",
+      "cloud": "aws",
+      "region": "us-east-2",
+      "platform": "SevSnp",
+      "instance": "i-0280d827121bac1e5",
+      "instance_type": "c6a.xlarge",
+      "cpu": "AMD EPYC 7R13 (Milan)",
+      "signing_key": "VLEK",
+      "measurement": "b756dde72c548e42560ba6b43955b68c1239682104c78fa07989ed3d15478107cb0e0a2a9637604586b9615eb8da7617",
+      "chain": "report -> VLEK -> ASVK -> ARK-Milan (pinned)",
+      "verified_utc": "2026-06-25",
+      "artifact": "deploy/live-snp/snp-verified.json",
+      "endpoint": null
+    },
+    {
       "id": "aws-nitro-use2",
       "label": "AWS Nitro Enclave",
       "cloud": "aws",

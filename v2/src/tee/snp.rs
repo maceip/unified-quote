@@ -177,17 +177,21 @@ impl TeeProvider for SnpProvider {
         let report_start = std::mem::size_of::<SnpReportResp>();
         let report_bytes = report_buf[report_start..report_start + report_size].to_vec();
 
-        // Parse cert table from certs_buf if present
+        // Append the endorsement cert table after the report so the stored
+        // quote is self-verifiable off-box (verifier parses it at 0x4A0).
         let certs_len = req.certs_len as usize;
+        let mut raw_quote = report_bytes;
         let cert_chain = if certs_len > 0 {
-            parse_snp_cert_table(&certs_buf[..certs_len])
+            let table = &certs_buf[..certs_len];
+            raw_quote.extend_from_slice(table);
+            parse_snp_cert_table(table)
         } else {
             Vec::new()
         };
 
         Ok(TeeEvidence {
             platform: Platform::SevSnp,
-            raw_quote: report_bytes,
+            raw_quote,
             cert_chain,
             kms_private_key: None,
         })
@@ -265,16 +269,22 @@ fn collect_via_configfs_tsm(report_data: &[u8; 64]) -> Result<TeeEvidence, TeeEr
         TeeError::InvalidResponse(format!("Failed to write inblob: {e}"))
     })?;
 
-    // Read the quote
-    let quote = fs::read(format!("{report_dir}/outblob")).map_err(|e| {
+    // Read the quote (the bare 0x4A0 attestation report).
+    let mut quote = fs::read(format!("{report_dir}/outblob")).map_err(|e| {
         let _ = fs::remove_dir(&report_dir);
         TeeError::InvalidResponse(format!("Failed to read outblob: {e}"))
     })?;
 
-    // Try auxblob for certs
+    // Append the endorsement cert table (auxblob) directly after the report so
+    // the stored quote is self-verifiable off-box: the verifier parses the GHCB
+    // cert table at offset 0x4A0. On AWS/Azure CVMs this carries the VLEK leaf
+    // (there is no by-chip_id KDS fallback for VLEK — the chip_id is masked).
     let cert_chain = match fs::read(format!("{report_dir}/auxblob")) {
-        Ok(aux) => vec![aux],
-        Err(_) => Vec::new(),
+        Ok(aux) if !aux.is_empty() => {
+            quote.extend_from_slice(&aux);
+            vec![aux]
+        }
+        _ => Vec::new(),
     };
 
     let _ = fs::remove_dir(&report_dir);

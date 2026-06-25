@@ -11,7 +11,7 @@ path = "src/main.rs"
 [features]
 default = ["nitro", "sev-snp", "tdx"]
 nitro = ["dep:serde_cbor", "dep:aws-nitro-enclaves-nsm-api", "dep:rsa", "dep:aes", "dep:cbc"]
-sev-snp = ["dep:p384"]
+sev-snp = ["dep:p384", "dep:rsa"]
 tdx = []
 
 [dependencies]

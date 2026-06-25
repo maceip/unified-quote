@@ -13,10 +13,12 @@ use sha2::{Digest, Sha256};
 pub const AWS_NITRO_ROOT_SHA256: &str =
     "641a0321a3e244efe456463195d606317ed7cdcc3c1756e09893f3c68f79bb5b";
 
-/// AMD ARK (Root Key) fingerprint for Milan (SEV-SNP v2).
-/// Source: https://kdsintf.amd.com/vcek/v1/Milan/cert_chain
+/// AMD ARK (Root Key) fingerprint for Milan — SHA-256 of the DER-encoded
+/// self-signed `CN=ARK-Milan` cert. This same ARK roots both the VCEK chain
+/// (`/vcek/v1/Milan/cert_chain`) and the VLEK chain (`/vlek/v1/Milan/cert_chain`);
+/// the two chains carry a byte-identical ARK.
 pub const AMD_ARK_MILAN_SHA256: &str =
-    "5b38a09f3ee23a2bd80091e57b884c40e58a4e18cda8a584018ebc1c3202ed57";
+    "69d063b45344d26a2e94e1f4210de49ef555308287d4c174445c95639a540bcd";
 
 /// AMD ARK fingerprint for Genoa (SEV-SNP v5).
 /// Source: https://kdsintf.amd.com/vcek/v1/Genoa/cert_chain

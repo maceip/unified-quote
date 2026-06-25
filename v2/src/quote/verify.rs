@@ -63,6 +63,67 @@ pub fn verify_platform_quote(
 
 /// Verify that `subject` cert was signed by `issuer` cert using ECDSA-P384.
 #[cfg(feature = "sev-snp")]
+/// Verify that `subject`'s certificate signature was produced by `issuer`'s key,
+/// dispatching on the signature algorithm. AMD's SNP cert chain mixes algorithms:
+/// the ARK/ASK/ASVK are RSA-4096 (RSASSA-PSS, SHA-384) while VCEK/VLEK leaves are
+/// ECDSA P-384. A P-384-only chain check therefore cannot validate the path to
+/// the AMD root.
+fn verify_cert_sig(issuer_der: &[u8], subject_der: &[u8]) -> Result<bool, VerifyError> {
+    use der::{Decode, Encode};
+    use x509_cert::Certificate;
+
+    let issuer = Certificate::from_der(issuer_der)
+        .map_err(|e| VerifyError::PlatformError(format!("parse issuer cert: {e}")))?;
+    let subject = Certificate::from_der(subject_der)
+        .map_err(|e| VerifyError::PlatformError(format!("parse subject cert: {e}")))?;
+
+    let issuer_pk = issuer
+        .tbs_certificate
+        .subject_public_key_info
+        .subject_public_key
+        .raw_bytes();
+    let tbs_der = subject
+        .tbs_certificate
+        .to_der()
+        .map_err(|e| VerifyError::PlatformError(format!("re-encode TBS: {e}")))?;
+    let sig_bytes = subject.signature.raw_bytes();
+    let sig_alg = subject.signature_algorithm.oid.to_string();
+
+    match sig_alg.as_str() {
+        // ecdsa-with-SHA384
+        "1.2.840.10045.4.3.3" => {
+            use p384::ecdsa::{self, signature::hazmat::PrehashVerifier};
+            use sha2::Sha384;
+            let vk = ecdsa::VerifyingKey::from_sec1_bytes(issuer_pk)
+                .map_err(|e| VerifyError::PlatformError(format!("issuer P-384 key: {e}")))?;
+            let sig = ecdsa::DerSignature::from_bytes(sig_bytes)
+                .map_err(|e| VerifyError::PlatformError(format!("parse cert sig: {e}")))?;
+            let digest = Sha384::digest(&tbs_der);
+            vk.verify_prehash(&digest, &sig)
+                .map_err(|e| VerifyError::PlatformError(format!("ecdsa cert verify: {e}")))?;
+            Ok(true)
+        }
+        // rsassaPss — AMD ARK/ASK/ASVK (RSA-4096, SHA-384, MGF1-SHA384, salt 48)
+        "1.2.840.113549.1.1.10" => {
+            use rsa::pkcs1::DecodeRsaPublicKey;
+            use rsa::pss::{Signature, VerifyingKey};
+            use rsa::signature::Verifier;
+            use sha2::Sha384;
+            let pk = rsa::RsaPublicKey::from_pkcs1_der(issuer_pk)
+                .map_err(|e| VerifyError::PlatformError(format!("issuer RSA key: {e}")))?;
+            let vk = VerifyingKey::<Sha384>::new(pk);
+            let sig = Signature::try_from(sig_bytes)
+                .map_err(|e| VerifyError::PlatformError(format!("parse RSA-PSS sig: {e}")))?;
+            vk.verify(&tbs_der, &sig)
+                .map_err(|e| VerifyError::PlatformError(format!("rsa-pss cert verify: {e}")))?;
+            Ok(true)
+        }
+        other => Err(VerifyError::PlatformError(format!(
+            "unsupported cert signature algorithm OID {other}"
+        ))),
+    }
+}
+
 fn verify_cert_chain_p384(issuer_der: &[u8], subject_der: &[u8]) -> Result<bool, VerifyError> {
     use der::{Decode, Encode};
     use p384::ecdsa::{self, signature::hazmat::PrehashVerifier};
@@ -464,37 +525,69 @@ fn verify_snp_quote(
     {
         let signed_data = &raw_quote[0x000..0x2A0];
 
-        // Signature at 0x2A0: r (48 bytes) at +0, s (48 bytes) at +72
-        // Each component is 48 bytes with 24 bytes padding after
-        let r = &raw_quote[0x2A0..0x2D0];
-        let s = &raw_quote[0x2E8..0x318];
+        // Signature at 0x2A0: r (72-byte field) then s (72-byte field at +72).
+        // For P-384 each scalar occupies the low 48 bytes — and AMD stores them
+        // LITTLE-ENDIAN. The `ecdsa` crate wants big-endian r||s, so reverse each.
+        let mut r = raw_quote[0x2A0..0x2D0].to_vec();
+        let mut s = raw_quote[0x2E8..0x318].to_vec();
+        r.reverse();
+        s.reverse();
         let mut sig_bytes = Vec::with_capacity(96);
-        sig_bytes.extend_from_slice(r);
-        sig_bytes.extend_from_slice(s);
+        sig_bytes.extend_from_slice(&r);
+        sig_bytes.extend_from_slice(&s);
 
         let sig = ecdsa::Signature::from_slice(&sig_bytes)
             .map_err(|e| VerifyError::PlatformError(format!("SNP parse signature: {e}")))?;
 
         let digest = Sha384::digest(signed_data);
 
-        // Try to get VCEK from appended cert table (SNP_GET_EXT_REPORT path)
+        // Determine the report's signing-key kind. Offset 0x48, key_info,
+        // bits [4:2]: 0 = VCEK (per-chip), 1 = VLEK (cloud-provisioned). AWS and
+        // Azure confidential VMs sign with VLEK, so a verifier that only knows
+        // VCEK-by-chip_id will always fail against the AMD root on those clouds.
+        let key_info = u32::from_le_bytes(raw_quote[0x48..0x4C].try_into().unwrap());
+        let is_vlek = ((key_info >> 2) & 0x7) == 1;
+
+        // Leaf endorsement cert (VCEK or VLEK) from the appended cert table
+        // (SNP_GET_EXT_REPORT / configfs-tsm auxblob path), plus any intermediates.
         let mut vcek_der: Option<Vec<u8>> = None;
+        let mut vlek_der: Option<Vec<u8>> = None;
         let mut ask_der: Option<Vec<u8>> = None;
         let mut ark_der: Option<Vec<u8>> = None;
 
         if raw_quote.len() > 0x480 {
-            parse_snp_cert_table(raw_quote, &mut vcek_der, &mut ask_der, &mut ark_der);
+            parse_snp_cert_table(
+                raw_quote,
+                &mut vcek_der,
+                &mut vlek_der,
+                &mut ask_der,
+                &mut ark_der,
+            );
         }
 
-        // Fallback: fetch VCEK from AMD KDS if not in cert table
-        if vcek_der.is_none() {
+        let product = crate::tee::kds::snp_product(raw_quote).unwrap_or("Milan");
+
+        if is_vlek {
+            // AWS/Azure ship only the VLEK leaf inline; its intermediate (ASVK)
+            // and root (ARK) come from AMD's /vlek/v1/{product}/cert_chain.
+            // There is no by-chip_id fallback for VLEK (chip_id is masked).
+            if ask_der.is_none() || ark_der.is_none() {
+                match crate::tee::kds::fetch_cert_chain_kind(product, "vlek") {
+                    Ok((ask, ark)) => {
+                        ask_der.get_or_insert(ask);
+                        ark_der.get_or_insert(ark);
+                    }
+                    Err(e) => eprintln!("[uq/verify] AMD KDS vlek cert_chain fetch failed: {e}"),
+                }
+            }
+        } else if vcek_der.is_none() {
+            // VCEK path: fetch the per-chip VCEK + chain from KDS.
             if let Ok((product, chip_id, bl, tee, snp_ver, ucode)) =
                 crate::tee::kds::extract_kds_params(raw_quote)
             {
                 match crate::tee::kds::fetch_vcek(&product, &chip_id, bl, tee, snp_ver, ucode) {
                     Ok(vcek) => {
                         vcek_der = Some(vcek);
-                        // Also fetch the cert chain
                         if let Ok((ask, ark)) = crate::tee::kds::fetch_cert_chain(&product) {
                             ask_der = Some(ask);
                             ark_der = Some(ark);
@@ -507,11 +600,19 @@ fn verify_snp_quote(
             }
         }
 
-        if let Some(ref vcek) = vcek_der {
+        // The endorsement key that actually signed this report.
+        let leaf_der = if is_vlek {
+            vlek_der.as_ref()
+        } else {
+            vcek_der.as_ref()
+        };
+
+        if let Some(leaf) = leaf_der {
             let cert = {
                 use der::Decode;
-                x509_cert::Certificate::from_der(vcek)
-                    .map_err(|e| VerifyError::PlatformError(format!("parse VCEK: {e}")))?
+                x509_cert::Certificate::from_der(leaf).map_err(|e| {
+                    VerifyError::PlatformError(format!("parse endorsement cert: {e}"))
+                })?
             };
             let pk_bytes = cert
                 .tbs_certificate
@@ -519,37 +620,34 @@ fn verify_snp_quote(
                 .subject_public_key
                 .raw_bytes();
             let vk = ecdsa::VerifyingKey::from_sec1_bytes(pk_bytes)
-                .map_err(|e| VerifyError::PlatformError(format!("VCEK P-384 key: {e}")))?;
+                .map_err(|e| VerifyError::PlatformError(format!("endorsement P-384 key: {e}")))?;
 
             sig_verified = vk.verify_prehash(&digest, &sig).is_ok();
             if !sig_verified {
                 return Err(VerifyError::PlatformError(
-                    "SNP: report signature verification FAILED against VCEK".into(),
+                    "SNP: report signature verification FAILED against endorsement key".into(),
                 ));
             }
 
-            // Verify VCEK → ASK → ARK chain if available
+            // Verify leaf → ASK/ASVK → ARK chain if available. The ARK root is
+            // shared across the VCEK and VLEK chains for a product line.
             if let (Some(ref ask), Some(ref ark)) = (&ask_der, &ark_der) {
-                verify_cert_chain_p384(ark, ark)?; // ARK is self-signed
-                                                   // Pin AMD root fingerprint
-                let version =
-                    u32::from_le_bytes(raw_quote[0..4].try_into().expect("version bytes"));
-                let expected_fp = if version >= 5 {
-                    super::roots::AMD_ARK_GENOA_SHA256
-                } else {
-                    super::roots::AMD_ARK_MILAN_SHA256
+                verify_cert_sig(ark, ark)?; // ARK is self-signed (RSA-PSS)
+                let expected_fp = match product {
+                    "Genoa" => super::roots::AMD_ARK_GENOA_SHA256,
+                    _ => super::roots::AMD_ARK_MILAN_SHA256,
                 };
                 if !super::roots::verify_root_fingerprint(ark, expected_fp) {
                     return Err(VerifyError::PlatformError(
                         "SNP: ARK fingerprint does not match pinned AMD root".into(),
                     ));
                 }
-                verify_cert_chain_p384(ark, ask)?; // ARK signed ASK
-                verify_cert_chain_p384(ask, vcek)?; // ASK signed VCEK
+                verify_cert_sig(ark, ask)?; // ARK signed ASK/ASVK (RSA-PSS)
+                verify_cert_sig(ask, leaf)?; // ASK/ASVK signed leaf (VLEK/VCEK)
                 chain_verified = true;
             }
         }
-        // If no VCEK available (KDS also failed), sig_verified stays false
+        // If no endorsement cert available, sig_verified stays false
     }
 
     let mut measurements = vec![
@@ -584,6 +682,7 @@ fn verify_snp_quote(
 fn parse_snp_cert_table(
     raw: &[u8],
     vcek: &mut Option<Vec<u8>>,
+    vlek: &mut Option<Vec<u8>>,
     ask: &mut Option<Vec<u8>>,
     ark: &mut Option<Vec<u8>>,
 ) {
@@ -591,6 +690,12 @@ fn parse_snp_cert_table(
     const VCEK_GUID: [u8; 16] = [
         0x63, 0xda, 0x75, 0x8d, 0xe6, 0x64, 0x56, 0x45, 0xb4, 0x58, 0x73, 0x2a, 0x2b, 0x5d, 0xcc,
         0xf7,
+    ];
+    // VLEK (Versioned Loaded Endorsement Key) — used by AWS / Azure CVMs.
+    // GUID a8074bc2-a25a-483e-aae6-39c045a0b8a1, stored raw (mixed-endian fields).
+    const VLEK_GUID: [u8; 16] = [
+        0xa8, 0x07, 0x4b, 0xc2, 0xa2, 0x5a, 0x48, 0x3e, 0xaa, 0xe6, 0x39, 0xc0, 0x45, 0xa0, 0xb8,
+        0xa1,
     ];
     const ASK_GUID: [u8; 16] = [
         0x4a, 0xb7, 0xb3, 0x79, 0xbb, 0xac, 0x4f, 0xe4, 0xa0, 0x2f, 0x05, 0xae, 0xf3, 0x27, 0xc7,
@@ -627,6 +732,8 @@ fn parse_snp_cert_table(
             let cert_data = raw[abs_offset..abs_offset + data_length].to_vec();
             if guid == VCEK_GUID {
                 *vcek = Some(cert_data);
+            } else if guid == VLEK_GUID {
+                *vlek = Some(cert_data);
             } else if guid == ASK_GUID {
                 *ask = Some(cert_data);
             } else if guid == ARK_GUID {
