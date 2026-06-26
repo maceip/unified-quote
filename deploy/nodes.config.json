@@ -58,7 +58,7 @@
       "region": "us-central1",
       "platform": "Tdx",
       "status": "planned",
-      "detail": "gcp c3 confidential vms expose intel tdx via configfs-tsm, which the uq tdx collector already supports. provisioning is gated on gcloud auth + a gcp project not present in this environment; deploy/gcp-tdx.sh is ready to run.",
+      "detail": "gcp c3 confidential vms expose intel tdx via configfs-tsm, which the uq tdx collector already supports. the project (lowkey-b7136) exists with billing; deployment is gated only on gcloud credentials not reachable from this environment. deploy/gcp-tdx.sh is one command from live and will serve the same uq-verifiable attested-TLS endpoint as the other nodes.",
       "endpoint": null
     }
   ]
