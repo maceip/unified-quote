@@ -68,13 +68,17 @@ westeurope). azure runs sev-snp under the vTOM paravisor, so there is no
 the **amd root** — per-chip vcek → ask → ark-milan — so the verdict chains to amd
 silicon, not to microsoft azure attestation (MAA):
 
-```bash
-./target/release/uq azure check http://51.124.172.253:8443/
-# → verdict verified · sig + chain PASS (→ pinned amd ark-milan)
-# → measurement 41f77fe5… · report_data == sha256(runtime) endorses the vTPM AK
-# → value_x_bound true · value_x dde6f4c1… (source identity, see below)
+the node is served over **attested-TLS** at `attest.secure.build` — the leaf
+cert itself carries the snp→amd evidence (no ca in the chain), and the cert key
+is bound into the hardware quote:
 
-# or re-verify the captured vTPM evidence offline (fetches vcek from amd kds):
+```bash
+./target/release/uq azure check-tls https://attest.secure.build:8443/
+# → channel binding PASS (cert SPKI bound into the AK quote)
+# → verdict verified · sig + chain PASS (→ pinned amd ark-milan)
+# → measurement 41f77fe5… · value_x dde6f4c1… (source identity, see below)
+
+# or re-verify captured vTPM evidence offline (fetches vcek from amd kds):
 ./target/release/uq azure verify deploy/azure-hcl/azure-hcl.bin
 ```
 

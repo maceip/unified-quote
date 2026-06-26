@@ -118,9 +118,12 @@ def parse_azure_output(text):
 
 def check_azure_node(endpoint):
     """Re-verify an Azure HCL evidence endpoint. Returns (verdict, detail, entry_fields)."""
+    # attested-TLS endpoints (https) embed the evidence in the cert; plain
+    # http endpoints serve a bundle. Pick the matching verifier subcommand.
+    sub = "check-tls" if endpoint.startswith("https://") else "check"
     try:
         proc = subprocess.run(
-            [UQ_BIN, "azure", "check", endpoint],
+            [UQ_BIN, "azure", sub, endpoint],
             capture_output=True, text=True, timeout=CHECK_TIMEOUT,
         )
     except subprocess.TimeoutExpired:

@@ -2386,6 +2386,7 @@ fn cmd_azure(args: &[String]) -> anyhow::Result<()> {
                     tpm_quote_msg: None,
                     tpm_quote_sig: None,
                     value_x: None,
+                    tls_spki: None,
                 }
             };
             // Pre-verify so we only serve self-authenticating, valid evidence.
@@ -2395,12 +2396,92 @@ fn cmd_azure(args: &[String]) -> anyhow::Result<()> {
             let hcl = hex::decode(&bundle.hcl)?;
             serve_azure_evidence(port, hcl, bundle_json, verdict_json)
         }
+        "serve-tls" => {
+            let domain = flag("--domain", "attest.secure.build");
+            let port: u16 = flag("--port", "8443").parse().unwrap_or(8443);
+            let vx = parse_binding()?.ok_or_else(|| {
+                anyhow::anyhow!("serve-tls requires --value-x <hex32> (the source identity to bind)")
+            })?;
+            eprintln!("[uq/azure] Minting attested-TLS cert for {domain} (value_x {})", hex::encode(vx));
+            let (cert, _bundle) =
+                azure::collect_attested_cert(&domain, &vx).map_err(|e| anyhow::anyhow!(e))?;
+            // Self-check before serving: only expose evidence that verifies.
+            let verdict =
+                azure::verify_attested_cert(&cert.cert_der).map_err(|e| anyhow::anyhow!(e))?;
+            print_azure_verdict(&verdict);
+            if verdict.verdict != "verified" {
+                anyhow::bail!("refusing to serve: self-verification failed");
+            }
+            let verdict_json = serde_json::to_string_pretty(&verdict)?;
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async move {
+                let state = std::sync::Arc::new(
+                    net::tls::TlsState::new_with_pem(
+                        cert.cert_pem.as_bytes(),
+                        cert.key_pem.as_bytes(),
+                    )
+                    .map_err(|e| anyhow::anyhow!(e))?,
+                );
+                state.set_attestation(verdict_json).await;
+                eprintln!("[uq/azure] attested-TLS on 0.0.0.0:{port} — cert carries the SNP→AMD bundle + value_x");
+                net::tls::serve(state, port).await
+            })
+        }
+        "check-tls" => {
+            let url = positional().ok_or_else(|| {
+                anyhow::anyhow!("usage: uq azure check-tls https://<host>[:port]/")
+            })?;
+            let stripped = url.strip_prefix("https://").unwrap_or(&url);
+            let hostport = stripped.split('/').next().unwrap_or(stripped);
+            let (host, port) = hostport
+                .split_once(':')
+                .map(|(h, p)| (h.to_string(), p.parse::<u16>().unwrap_or(8443)))
+                .unwrap_or_else(|| (hostport.to_string(), 8443));
+            eprintln!("[uq/azure] attested-TLS check: {host}:{port}");
+
+            let _ = rustls::crypto::ring::default_provider().install_default();
+            let client_config = build_unchecked_client_config();
+            let server_name = rustls::pki_types::ServerName::try_from(host.clone())
+                .map_err(|e| anyhow::anyhow!("invalid server name {host}: {e}"))?;
+            let mut conn =
+                rustls::ClientConnection::new(std::sync::Arc::new(client_config), server_name)
+                    .map_err(|e| anyhow::anyhow!("rustls client: {e}"))?;
+            let mut sock = std::net::TcpStream::connect((host.as_str(), port))
+                .map_err(|e| anyhow::anyhow!("tcp connect {host}:{port}: {e}"))?;
+            let mut tls = rustls::Stream::new(&mut conn, &mut sock);
+            use std::io::{Read, Write};
+            let req = format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+            tls.write_all(req.as_bytes())
+                .map_err(|e| anyhow::anyhow!("TLS write: {e}"))?;
+            let mut resp = Vec::new();
+            let _ = tls.read_to_end(&mut resp);
+
+            let certs = conn
+                .peer_certificates()
+                .ok_or_else(|| anyhow::anyhow!("peer presented no certificates"))?;
+            let leaf = certs
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("empty peer cert chain"))?;
+            let leaf_der = leaf.as_ref().to_vec();
+            eprintln!("[uq/azure] Leaf cert: {} bytes DER; verifying embedded evidence…", leaf_der.len());
+
+            let verdict =
+                azure::verify_attested_cert(&leaf_der).map_err(|e| anyhow::anyhow!(e))?;
+            eprintln!("[uq/azure] channel binding: PASS (cert SPKI bound into AK quote)");
+            print_azure_verdict(&verdict);
+            if verdict.verdict != "verified" {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         _ => {
             eprintln!("Usage:");
-            eprintln!("  uq azure collect [--value-x <hex32>] [-o azure-bundle.json]   (on the Azure CVM)");
-            eprintln!("  uq azure verify  <azure-bundle.json | azure-hcl.bin>");
-            eprintln!("  uq azure check   http://<host>[:port]/");
-            eprintln!("  uq azure serve   [-f azure-bundle.json] [--port 8443]");
+            eprintln!("  uq azure collect   [--value-x <hex32>] [-o azure-bundle.json]   (on the Azure CVM)");
+            eprintln!("  uq azure verify    <azure-bundle.json | azure-hcl.bin>");
+            eprintln!("  uq azure check     http://<host>[:port]/");
+            eprintln!("  uq azure serve     [-f azure-bundle.json] [--port 8443]");
+            eprintln!("  uq azure serve-tls --value-x <hex32> [--domain attest.secure.build] [--port 8443]");
+            eprintln!("  uq azure check-tls https://<host>[:port]/");
             std::process::exit(1);
         }
     }

@@ -47,7 +47,8 @@
       "verified_utc": "2026-06-26",
       "detail": "azure cvms run amd sev-snp under the vTOM paravisor and do not expose /dev/sev-guest. the paravisor publishes a genuine snp report through the vTPM (NV index 0x01400001); `uq azure` extracts it and verifies it against the AMD root (per-chip VCEK -> ASK -> ARK-Milan). report_data == sha256(runtime-data) endorses the vTPM AK, which then signs a tpm2 quote binding value_x. value_x is the sha256 of attestation-service, built inside this same cvm by a self-hosted github runner and carrying github build provenance (sigstore) for the same digest. two roots (sigstore + amd) meet at one value_x. trust chains to amd silicon, not to MAA.",
     "source_provenance": "github: maceip/attestation-service .github/workflows/attest-in-tee.yml (self-hosted, in-TEE) -> release azure-tee-build; verify with scripts/verify-source-to-silicon.sh",
-      "azure_endpoint": "http://51.124.172.253:8443/",
+    "transport": "attested-tls: the leaf cert carries the snp->amd bundle at the tcg-dice cmw oid (2.23.133.5.4.9); the cert spki is bound into the ak quote (qualifyingData = sha256(spki||value_x)), so the channel itself is attested with no ca in the chain.",
+    "azure_endpoint": "https://attest.secure.build:8443/",
       "endpoint": null
     },
     {

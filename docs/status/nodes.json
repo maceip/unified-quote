@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-06-26T16:30:45Z",
+  "updated_at": "2026-06-26T17:07:58Z",
   "generator": "report-live-quotes.yml",
   "schema": 1,
   "nodes": [
@@ -20,7 +20,7 @@
       "spki_binding": "PASS",
       "quote_signature": "PASS",
       "chain": "PASS (2 stage(s) walked)",
-      "checked_at": "2026-06-26T16:30:44Z",
+      "checked_at": "2026-06-26T17:07:56Z",
       "detail": "quote re-verified against pinned vendor root"
     },
     {
@@ -41,7 +41,7 @@
       "spki_binding": "PASS",
       "quote_signature": "PASS",
       "chain": "leaf only (no previous stage)",
-      "checked_at": "2026-06-26T16:30:44Z",
+      "checked_at": "2026-06-26T17:07:57Z",
       "detail": "quote re-verified against pinned vendor root"
     },
     {
@@ -50,19 +50,19 @@
       "cloud": "azure",
       "region": "westeurope",
       "platform": "SevSnp",
-      "endpoint": "http://51.124.172.253:8443/",
+      "endpoint": "https://attest.secure.build:8443/",
       "verdict": "verified",
-      "value_x": "0ccb5e62ae295259c952d944b97ca19e1091bb4506c94236f008580df87c33ab",
-      "value_x_short": "0ccb5e62ae295259",
+      "value_x": "dde6f4c1ce11a0a21bb02384e1440189232984eb5b7659d877725ded0c204b87",
+      "value_x_short": "dde6f4c1ce11a0a2",
       "measurements": {
         "MEASUREMENT": "41f77fe5c1416343f84dbeeded504eb4a2c450861317ed3e4e46cd771c79243a4cbeb3d75ec663e6a7a47bd1f4fab503"
       },
-      "spki_binding": "report_data = sha256(runtime) \u2192 vTPM AK",
+      "spki_binding": "report_data \u2192 vTPM AK \u2192 AK quote binds value_x",
       "quote_signature": "verified",
       "chain": "vTPM HCL \u2192 SNP report \u2192 VCEK \u2192 ASK \u2192 ARK-Milan (pinned)",
-      "checked_at": "2026-06-26T16:30:45Z",
-      "detail": "vTPM SNP report re-verified against the AMD root (no MAA)",
-      "value_x_bound": false
+      "checked_at": "2026-06-26T17:07:58Z",
+      "detail": "vTPM SNP re-verified against the AMD root; value_x bound via AK quote (GitHub build provenance \u2192 silicon)",
+      "value_x_bound": true
     },
     {
       "id": "gcp-tdx-usc1",

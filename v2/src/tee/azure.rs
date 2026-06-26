@@ -61,8 +61,15 @@ pub struct AzureBundle {
     pub tpm_quote_sig: Option<String>,
     /// The 32-byte qualifyingData committed into the AK quote (hex) — the
     /// source/artifact identity (e.g. a GitHub build-provenance subject digest).
+    /// For attested-TLS bundles the AK quote actually binds
+    /// `sha256(tls_spki || value_x)`; `value_x` here is still the source id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value_x: Option<String>,
+    /// sha256 of the TLS leaf SPKI (hex), present only for attested-TLS
+    /// bundles carried in an X.509 cert extension. The verifier recomputes it
+    /// from the presented cert to bind the channel into the hardware quote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_spki: Option<String>,
 }
 
 /// Result of verifying an Azure HCL report.
@@ -331,6 +338,7 @@ pub fn collect_bundle(binding: Option<&[u8; 32]>) -> Result<AzureBundle, String>
         tpm_quote_msg: None,
         tpm_quote_sig: None,
         value_x: None,
+        tls_spki: None,
     };
     if let Some(b) = binding {
         let (msg, sig) = tpm_quote_over(b)?;
@@ -339,6 +347,93 @@ pub fn collect_bundle(binding: Option<&[u8; 32]>) -> Result<AzureBundle, String>
         bundle.value_x = Some(hex::encode(b));
     }
     Ok(bundle)
+}
+
+/// Channel-binding digest for attested-TLS: `sha256(tls_spki || value_x)`.
+/// Committing this into the AK quote ties both the TLS key (channel binding)
+/// and the source identity to AMD silicon in a single 32-byte qualifyingData.
+fn tls_binding(tls_spki: &[u8; 32], value_x: &[u8; 32]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(tls_spki);
+    h.update(value_x);
+    h.finalize().into()
+}
+
+/// Collect an attested-TLS certificate for `domain`: a self-signed cert whose
+/// key is generated here, carrying an `AzureBundle` (HCL + AK quote) at the
+/// TCG-DICE extension. The AK quote binds `sha256(cert_spki || value_x)`, so a
+/// `check-tls` client can prove — from the handshake alone — that the channel
+/// terminates inside this genuine SEV-SNP CVM running source `value_x`.
+#[cfg(unix)]
+pub fn collect_attested_cert(
+    domain: &str,
+    value_x: &[u8; 32],
+) -> Result<(crate::net::attested_tls::AttestedCert, AzureBundle), String> {
+    use crate::net::attested_tls::{generate_keypair, make_attested_cert, spki_hash_of};
+    let kp = generate_keypair().map_err(|e| format!("keypair: {e}"))?;
+    let spki = spki_hash_of(&kp);
+    let binding = tls_binding(&spki, value_x);
+    let hcl = read_hcl_report()?;
+    let (msg, sig) = tpm_quote_over(&binding)?;
+    let bundle = AzureBundle {
+        version: 1,
+        platform: "azure-sev-snp-vtpm".into(),
+        hcl: hex::encode(&hcl),
+        tpm_quote_msg: Some(hex::encode(msg)),
+        tpm_quote_sig: Some(hex::encode(sig)),
+        value_x: Some(hex::encode(value_x)),
+        tls_spki: Some(hex::encode(spki)),
+    };
+    let payload = serde_json::to_vec(&bundle).map_err(|e| format!("bundle json: {e}"))?;
+    let cert = make_attested_cert(&kp, domain, &payload).map_err(|e| format!("make cert: {e}"))?;
+    Ok((cert, bundle))
+}
+
+/// Verify an attested-TLS leaf cert: extract the embedded `AzureBundle`, confirm
+/// the cert SPKI matches the bundle's `tls_spki` (channel binding), verify the
+/// HCL report to the AMD root, and confirm the AK quote binds
+/// `sha256(cert_spki || value_x)`.
+pub fn verify_attested_cert(cert_der: &[u8]) -> Result<AzureVerdict, String> {
+    use crate::net::attested_tls::{extract_eat_from_cert, spki_hash_of_cert};
+    let payload = extract_eat_from_cert(cert_der)
+        .map_err(|e| format!("extract cert extension: {e}"))?
+        .ok_or("cert has no TCG-DICE attestation extension (not attested-TLS)")?;
+    let bundle: AzureBundle =
+        serde_json::from_slice(&payload).map_err(|e| format!("bundle parse: {e}"))?;
+
+    let cert_spki = spki_hash_of_cert(cert_der).map_err(|e| format!("cert spki: {e}"))?;
+    let claimed = bundle
+        .tls_spki
+        .as_ref()
+        .ok_or("bundle missing tls_spki (not an attested-TLS bundle)")?;
+    if hex::encode(cert_spki) != *claimed {
+        return Err("cert SPKI != bundle tls_spki (channel binding broken — relay/MITM)".into());
+    }
+
+    let hcl = hex::decode(&bundle.hcl).map_err(|e| format!("bundle.hcl hex: {e}"))?;
+    let mut verdict = verify_hcl(&hcl)?;
+
+    let vx_hex = bundle.value_x.as_ref().ok_or("bundle missing value_x")?;
+    let vx_bytes = hex::decode(vx_hex).map_err(|e| format!("value_x hex: {e}"))?;
+    let vx: [u8; 32] = vx_bytes
+        .try_into()
+        .map_err(|_| "value_x must be 32 bytes".to_string())?;
+    let expected = tls_binding(&cert_spki, &vx);
+
+    let ev = parse_hcl(&hcl)?;
+    let msg = hex::decode(bundle.tpm_quote_msg.as_ref().ok_or("bundle missing tpm_quote_msg")?)
+        .map_err(|e| format!("tpm_quote_msg hex: {e}"))?;
+    let sig = hex::decode(bundle.tpm_quote_sig.as_ref().ok_or("bundle missing tpm_quote_sig")?)
+        .map_err(|e| format!("tpm_quote_sig hex: {e}"))?;
+    verify_ak_quote(&ev.runtime, &msg, &sig, &expected)?;
+
+    verdict.value_x_bound = Some(true);
+    verdict.value_x = Some(vx_hex.clone());
+    if verdict.verdict != "verified" {
+        verdict.verdict = "fail".into();
+    }
+    Ok(verdict)
 }
 
 /// Run `tpm2_quote` with the vTPM AK over `binding` as qualifyingData; returns
