@@ -72,10 +72,21 @@ silicon, not to microsoft azure attestation (MAA):
 ./target/release/uq azure check http://51.124.172.253:8443/
 # → verdict verified · sig + chain PASS (→ pinned amd ark-milan)
 # → measurement 41f77fe5… · report_data == sha256(runtime) endorses the vTPM AK
+# → value_x_bound true · value_x dde6f4c1… (source identity, see below)
 
 # or re-verify the captured vTPM evidence offline (fetches vcek from amd kds):
 ./target/release/uq azure verify deploy/azure-hcl/azure-hcl.bin
 ```
+
+the azure node also carries a **source-level `value_x`**. report_data only
+endorses the vTPM ak (the paravisor owns it), so `value_x` rides an ak-signed
+`tpm2` quote instead: amd root → snp report → endorses the vTPM ak → ak signs a
+quote whose `qualifyingData` is `value_x`. `uq azure collect --value-x <sha256>`
+produces a bundle carrying that quote; `check`/`verify` confirm the signature and
+that `extraData == value_x`. here `value_x` is the digest of `attestation-service`,
+built inside that same cvm by a self-hosted github runner with github build
+provenance for the identical digest — two roots (sigstore + amd) meeting at one
+value. same linked pattern as nitro+nitrotpm.
 
 ## platform support
 

@@ -89,7 +89,7 @@ def parse_check_output(text):
 def parse_azure_output(text):
     """Extract fields from `uq azure check` stderr (vTPM SNP → AMD root)."""
     out = {"measurements": {}, "verdict": None, "sig": None, "chain_ok": None,
-           "runtime_sha256": None}
+           "runtime_sha256": None, "value_x": None, "value_x_bound": None}
     for raw in text.splitlines():
         line = re.sub(r"^\[uq/azure\]\s*", "", raw.strip())
         m = re.match(r"verdict:\s*(\w+)", line)
@@ -107,6 +107,12 @@ def parse_azure_output(text):
         m = re.match(r"runtime_sha256:\s*([0-9a-fA-F]{16,})", line)
         if m:
             out["runtime_sha256"] = m.group(1)
+        m = re.match(r"value_x_bound:\s*(\w+)", line)
+        if m:
+            out["value_x_bound"] = m.group(1) == "true"
+        m = re.match(r"value_x:\s*([0-9a-fA-F]{32,})", line)
+        if m:
+            out["value_x"] = m.group(1)
     return out
 
 
@@ -124,16 +130,24 @@ def check_azure_node(endpoint):
 
     combined = (proc.stderr or "") + "\n" + (proc.stdout or "")
     p = parse_azure_output(combined)
+    bound = p.get("value_x_bound") and p.get("value_x")
+    vx = p.get("value_x") if bound else p.get("runtime_sha256")
     fields = {
         "measurements": p["measurements"],
         "chain": "vTPM HCL → SNP report → VCEK → ASK → ARK-Milan (pinned)",
         "quote_signature": "verified" if p.get("sig") else "FAIL",
-        "spki_binding": "report_data = sha256(runtime) → vTPM AK",
-        "value_x": p.get("runtime_sha256"),
-        "value_x_short": (p.get("runtime_sha256") or "")[:16] or None,
+        "spki_binding": ("report_data → vTPM AK → AK quote binds value_x"
+                         if bound else "report_data = sha256(runtime) → vTPM AK"),
+        "value_x": vx,
+        "value_x_short": (vx or "")[:16] or None,
+        "value_x_bound": bool(bound),
     }
     if proc.returncode == 0 and p.get("verdict") == "verified":
-        return "verified", "vTPM SNP report re-verified against the AMD root (no MAA)", fields
+        detail = ("vTPM SNP re-verified against the AMD root; value_x bound via "
+                  "AK quote (GitHub build provenance → silicon)"
+                  if bound else
+                  "vTPM SNP report re-verified against the AMD root (no MAA)")
+        return "verified", detail, fields
     lowered = combined.lower()
     if any(s in lowered for s in ("connect", "refused", "timed out", "dns", "unreachable")):
         return "offline", "endpoint unreachable", fields
