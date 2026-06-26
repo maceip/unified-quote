@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-06-26T06:11:33Z",
+  "updated_at": "2026-06-26T06:51:00Z",
   "generator": "report-live-quotes.yml",
   "schema": 1,
   "nodes": [
@@ -9,16 +9,18 @@
       "cloud": "aws",
       "region": "us-east-2",
       "platform": "SevSnp",
-      "endpoint": null,
-      "verdict": "pending",
-      "value_x": null,
-      "value_x_short": null,
-      "measurements": {},
-      "spki_binding": null,
-      "quote_signature": null,
-      "chain": null,
-      "checked_at": null,
-      "detail": "registered, awaiting first live report"
+      "endpoint": "https://3.138.156.141/",
+      "verdict": "pass",
+      "value_x": "174dbc6ab29abf3d6cf529621e4d1342d3ad55613b5401ad67d78de4337f44034bfca040d62daf8b0f0ba3e4cb7710ea",
+      "value_x_short": "174dbc6ab29abf3d",
+      "measurements": {
+        "MEASUREMENT": "b756dde72c548e42560ba6b43955b68c1239682104c78fa07989ed3d15478107cb0e0a2a9637604586b9615eb8da7617"
+      },
+      "spki_binding": "pass",
+      "quote_signature": "pass",
+      "chain": "report -> VLEK -> ASVK -> ARK-Milan (pinned); stage1 -> stage0, value_x stable (2 stages)",
+      "checked_at": "2026-06-26T06:51:00Z",
+      "detail": "live attested-TLS endpoint; remote `uq check` verifies stage1->stage0 chain to pinned AMD Milan root"
     },
     {
       "id": "aws-nitro-use2",

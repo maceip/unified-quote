@@ -13,9 +13,10 @@
       "signing_key": "VLEK",
       "measurement": "b756dde72c548e42560ba6b43955b68c1239682104c78fa07989ed3d15478107cb0e0a2a9637604586b9615eb8da7617",
       "chain": "report -> VLEK -> ASVK -> ARK-Milan (pinned)",
-      "verified_utc": "2026-06-25",
+      "verified_utc": "2026-06-26",
       "artifact": "deploy/live-snp/snp-verified.json",
-      "endpoint": null
+      "value_x": "174dbc6ab29abf3d6cf529621e4d1342d3ad55613b5401ad67d78de4337f44034bfca040d62daf8b0f0ba3e4cb7710ea",
+      "endpoint": "https://3.138.156.141/"
     },
     {
       "id": "aws-nitro-use2",

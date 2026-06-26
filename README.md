@@ -29,6 +29,8 @@ amd vendor root — not a fixture.
 - **chain:** report → vlek → asvk → **ark-milan** (pinned amd root).
 - **launch measurement:**
   `b756dde72c548e42560ba6b43955b68c1239682104c78fa07989ed3d15478107cb0e0a2a9637604586b9615eb8da7617`
+- **live endpoint:** `https://3.138.156.141/` — the node serves attested-TLS
+  (stage 1) with the receipt embedded in the cert. re-verify remotely below.
 
 re-verify the captured receipt yourself (fetches the vlek cert chain from amd kds):
 
@@ -38,12 +40,15 @@ cargo build --release --bin uq
 # → binding PASS · quote binding PASS · measurement PASS · signature chain PASS
 ```
 
-## verify a live endpoint
+## verify the live endpoint
+
+no tee required — the verifier authenticates the cert by attestation, not by ca:
 
 ```bash
-# verifier only — no tee required (v2/)
 cargo build --release --bin uq
-./target/release/uq check https://<host>/
+./target/release/uq check https://3.138.156.141/
+# → spki binding PASS · quote signature PASS · chain PASS (stage1 → stage0)
+# → "3.138.156.141 is a genuine SevSnp TEE running Value X 174dbc6ab29abf3d"
 ```
 
 ## platform support
