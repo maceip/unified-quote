@@ -2276,30 +2276,60 @@ fn cmd_azure(args: &[String]) -> anyhow::Result<()> {
     };
     let positional = || rest.iter().find(|a| !a.starts_with("--")).cloned();
 
+    // Parse an optional 32-byte hex value_x (source/artifact identity) to bind
+    // into the AK-signed TPM quote. Accepts --value-x or --bind.
+    let parse_binding = || -> anyhow::Result<Option<[u8; 32]>> {
+        let mut hexs = flag("--value-x", "");
+        if hexs.is_empty() {
+            hexs = flag("--bind", "");
+        }
+        if hexs.is_empty() {
+            return Ok(None);
+        }
+        let bytes = hex::decode(hexs.trim_start_matches("0x"))
+            .map_err(|e| anyhow::anyhow!("--value-x must be hex: {e}"))?;
+        let arr: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("--value-x must be exactly 32 bytes (a sha256 digest)"))?;
+        Ok(Some(arr))
+    };
+
     match sub {
         "collect" => {
-            let out = flag("-o", "azure-hcl.bin");
+            let out = flag("-o", "azure-bundle.json");
+            let binding = parse_binding()?;
             eprintln!("[uq/azure] Reading HCL report from vTPM NV {}", azure::AZURE_HCL_NV_INDEX);
-            let hcl = azure::read_hcl_report().map_err(|e| anyhow::anyhow!(e))?;
-            std::fs::write(&out, &hcl)?;
-            eprintln!("[uq/azure] Wrote {} ({} bytes)", out, hcl.len());
-            let verdict = azure::verify_hcl(&hcl).map_err(|e| anyhow::anyhow!(e))?;
+            if let Some(b) = &binding {
+                eprintln!(
+                    "[uq/azure] Binding value_x {} via AK quote (vTPM {})",
+                    hex::encode(b),
+                    azure::AZURE_VTPM_AK_HANDLE
+                );
+            }
+            let bundle = azure::collect_bundle(binding.as_ref()).map_err(|e| anyhow::anyhow!(e))?;
+            std::fs::write(&out, serde_json::to_string_pretty(&bundle)?)?;
+            // Also emit the raw HCL for backward-compatible serving/verification.
+            std::fs::write("azure-hcl.bin", hex::decode(&bundle.hcl)?)?;
+            eprintln!("[uq/azure] Wrote {out} and azure-hcl.bin");
+            let verdict = azure::verify_bundle(&bundle).map_err(|e| anyhow::anyhow!(e))?;
             print_azure_verdict(&verdict);
-            std::fs::write(
-                "azure-attest.json",
-                serde_json::to_string_pretty(&verdict)?,
-            )?;
-            eprintln!("[uq/azure] Wrote azure-attest.json");
+            std::fs::write("azure-attest.json", serde_json::to_string_pretty(&verdict)?)?;
             if verdict.verdict != "verified" {
                 std::process::exit(1);
             }
             Ok(())
         }
         "verify" => {
-            let path = positional()
-                .ok_or_else(|| anyhow::anyhow!("usage: uq azure verify <azure-hcl.bin>"))?;
-            let hcl = std::fs::read(&path)?;
-            let verdict = azure::verify_hcl(&hcl).map_err(|e| anyhow::anyhow!(e))?;
+            let path = positional().ok_or_else(|| {
+                anyhow::anyhow!("usage: uq azure verify <azure-bundle.json | azure-hcl.bin>")
+            })?;
+            let raw = std::fs::read(&path)?;
+            let verdict = if path.ends_with(".json") {
+                let bundle: azure::AzureBundle = serde_json::from_slice(&raw)?;
+                azure::verify_bundle(&bundle).map_err(|e| anyhow::anyhow!(e))?
+            } else {
+                azure::verify_hcl(&raw).map_err(|e| anyhow::anyhow!(e))?
+            };
             print_azure_verdict(&verdict);
             if verdict.verdict != "verified" {
                 std::process::exit(1);
@@ -2310,20 +2340,31 @@ fn cmd_azure(args: &[String]) -> anyhow::Result<()> {
             let url = positional()
                 .ok_or_else(|| anyhow::anyhow!("usage: uq azure check http://<host>[:port]/"))?;
             let base = url.trim_end_matches('/');
-            let target = format!("{base}/azure-hcl.bin");
-            eprintln!("[uq/azure] Fetching evidence: {target}");
-            let resp = reqwest::blocking::Client::builder()
+            let client = reqwest::blocking::Client::builder()
                 .danger_accept_invalid_certs(true)
                 .timeout(std::time::Duration::from_secs(15))
-                .build()?
-                .get(&target)
-                .send()?;
-            if !resp.status().is_success() {
-                anyhow::bail!("endpoint returned HTTP {}", resp.status());
-            }
-            let hcl = resp.bytes()?.to_vec();
-            eprintln!("[uq/azure] Got {} bytes; verifying against AMD root…", hcl.len());
-            let verdict = azure::verify_hcl(&hcl).map_err(|e| anyhow::anyhow!(e))?;
+                .build()?;
+            // Prefer the richer bundle (carries value_x binding); fall back to raw HCL.
+            let bundle_url = format!("{base}/bundle.json");
+            eprintln!("[uq/azure] Fetching evidence: {bundle_url}");
+            let bundle_resp = client.get(&bundle_url).send();
+            let verdict = match bundle_resp {
+                Ok(r) if r.status().is_success() => {
+                    let bundle: azure::AzureBundle = serde_json::from_slice(&r.bytes()?)?;
+                    eprintln!("[uq/azure] Got bundle; verifying against AMD root…");
+                    azure::verify_bundle(&bundle).map_err(|e| anyhow::anyhow!(e))?
+                }
+                _ => {
+                    let target = format!("{base}/azure-hcl.bin");
+                    eprintln!("[uq/azure] No bundle.json; falling back to {target}");
+                    let resp = client.get(&target).send()?;
+                    if !resp.status().is_success() {
+                        anyhow::bail!("endpoint returned HTTP {}", resp.status());
+                    }
+                    let hcl = resp.bytes()?.to_vec();
+                    azure::verify_hcl(&hcl).map_err(|e| anyhow::anyhow!(e))?
+                }
+            };
             print_azure_verdict(&verdict);
             if verdict.verdict != "verified" {
                 std::process::exit(1);
@@ -2331,20 +2372,35 @@ fn cmd_azure(args: &[String]) -> anyhow::Result<()> {
             Ok(())
         }
         "serve" => {
-            let path = flag("-f", "azure-hcl.bin");
+            let path = flag("-f", "azure-bundle.json");
             let port: u16 = flag("--port", "8443").parse().unwrap_or(8443);
-            let hcl = std::fs::read(&path)?;
+            // Load a bundle if present, else wrap a raw HCL file as a bundle.
+            let bundle: azure::AzureBundle = if path.ends_with(".json") {
+                serde_json::from_slice(&std::fs::read(&path)?)?
+            } else {
+                let hcl = std::fs::read(&path)?;
+                azure::AzureBundle {
+                    version: 1,
+                    platform: "azure-sev-snp-vtpm".into(),
+                    hcl: hex::encode(hcl),
+                    tpm_quote_msg: None,
+                    tpm_quote_sig: None,
+                    value_x: None,
+                }
+            };
             // Pre-verify so we only serve self-authenticating, valid evidence.
-            let verdict = azure::verify_hcl(&hcl).map_err(|e| anyhow::anyhow!(e))?;
+            let verdict = azure::verify_bundle(&bundle).map_err(|e| anyhow::anyhow!(e))?;
             let verdict_json = serde_json::to_string_pretty(&verdict)?;
-            serve_azure_evidence(port, hcl, verdict_json)
+            let bundle_json = serde_json::to_string(&bundle)?;
+            let hcl = hex::decode(&bundle.hcl)?;
+            serve_azure_evidence(port, hcl, bundle_json, verdict_json)
         }
         _ => {
             eprintln!("Usage:");
-            eprintln!("  uq azure collect [-o azure-hcl.bin]   (on the Azure CVM)");
-            eprintln!("  uq azure verify  <azure-hcl.bin>");
+            eprintln!("  uq azure collect [--value-x <hex32>] [-o azure-bundle.json]   (on the Azure CVM)");
+            eprintln!("  uq azure verify  <azure-bundle.json | azure-hcl.bin>");
             eprintln!("  uq azure check   http://<host>[:port]/");
-            eprintln!("  uq azure serve   [-f azure-hcl.bin] [--port 8443]");
+            eprintln!("  uq azure serve   [-f azure-bundle.json] [--port 8443]");
             std::process::exit(1);
         }
     }
@@ -2364,17 +2420,30 @@ fn print_azure_verdict(v: &unified_quote::tee::azure::AzureVerdict) {
     if let Some(id) = &v.vm_unique_id {
         eprintln!("[uq/azure] vm_unique_id:   {id}");
     }
+    if let Some(bound) = v.value_x_bound {
+        eprintln!("[uq/azure] value_x_bound:  {bound} (AK quote → SNP-endorsed vTPM AK)");
+        if let Some(vx) = &v.value_x {
+            eprintln!("[uq/azure] value_x:        {vx}");
+        }
+    }
 }
 
 /// Minimal blocking HTTP/1.1 server exposing the self-authenticating evidence:
 ///   GET /azure-hcl.bin -> raw HCL report (verifiable to the AMD root anywhere)
+///   GET /bundle.json   -> full bundle (HCL + AK quote binding value_x)
 ///   GET /              -> JSON verdict
 #[cfg(feature = "sev-snp")]
-fn serve_azure_evidence(port: u16, hcl: Vec<u8>, verdict_json: String) -> anyhow::Result<()> {
+fn serve_azure_evidence(
+    port: u16,
+    hcl: Vec<u8>,
+    bundle_json: String,
+    verdict_json: String,
+) -> anyhow::Result<()> {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind(("0.0.0.0", port))?;
     eprintln!("[uq/azure] Serving evidence on 0.0.0.0:{port}");
     eprintln!("[uq/azure]   GET /azure-hcl.bin   (raw SNP report, AMD-verifiable)");
+    eprintln!("[uq/azure]   GET /bundle.json     (HCL + AK quote binding value_x)");
     eprintln!("[uq/azure]   GET /                (JSON verdict)");
     for stream in listener.incoming() {
         let mut stream = match stream {
@@ -2391,6 +2460,8 @@ fn serve_azure_evidence(port: u16, hcl: Vec<u8>, verdict_json: String) -> anyhow
             .unwrap_or("/");
         let (status, ctype, body): (&str, &str, Vec<u8>) = if path.starts_with("/azure-hcl.bin") {
             ("200 OK", "application/octet-stream", hcl.clone())
+        } else if path.starts_with("/bundle.json") {
+            ("200 OK", "application/json", bundle_json.clone().into_bytes())
         } else if path == "/" {
             ("200 OK", "application/json", verdict_json.clone().into_bytes())
         } else {
