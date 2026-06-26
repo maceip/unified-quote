@@ -11,6 +11,61 @@
 /// KDS base URL
 const KDS_BASE: &str = "https://kdsintf.amd.com";
 
+/// GET a KDS URL with retry/backoff. AMD KDS rate-limits aggressively (HTTP
+/// 429) and occasionally 5xxs; the certificates are immutable, so retrying is
+/// always safe. Honors `Retry-After` when present, else exponential backoff.
+fn kds_get(url: &str) -> Result<Vec<u8>, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("HTTP client: {e}"))?;
+
+    let max_attempts = 6u32;
+    let mut last_err = String::new();
+    for attempt in 0..max_attempts {
+        if attempt > 0 {
+            // exponential backoff: 1s, 2s, 4s, 8s, 16s (capped)
+            let secs = (1u64 << (attempt - 1)).min(16);
+            eprintln!("[uq/kds] retrying in {secs}s (attempt {}/{max_attempts}) — {last_err}", attempt + 1);
+            std::thread::sleep(std::time::Duration::from_secs(secs));
+        }
+        let resp = match client
+            .get(url)
+            .header("Accept", "application/x-pem-file")
+            .send()
+        {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = format!("request failed: {e}");
+                continue;
+            }
+        };
+        let status = resp.status();
+        if status.is_success() {
+            return resp
+                .bytes()
+                .map(|b| b.to_vec())
+                .map_err(|e| format!("KDS read body: {e}"));
+        }
+        // Retry on rate-limit / transient server errors; fail fast otherwise.
+        if status.as_u16() == 429 || status.is_server_error() {
+            if let Some(ra) = resp
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.trim().parse::<u64>().ok())
+            {
+                eprintln!("[uq/kds] {status}; Retry-After {ra}s");
+                std::thread::sleep(std::time::Duration::from_secs(ra.min(30)));
+            }
+            last_err = format!("KDS returned {status}");
+            continue;
+        }
+        return Err(format!("KDS returned {status}: {url}"));
+    }
+    Err(format!("KDS exhausted retries ({url}): {last_err}"))
+}
+
 /// Fetch the VCEK certificate for a specific chip and TCB version.
 ///
 /// URL: /vcek/v1/{product}/{chip_id_hex}?blSPL={bl}&teeSPL={tee}&snpSPL={snp}&ucodeSPL={ucode}
@@ -31,25 +86,10 @@ pub fn fetch_vcek(
 
     eprintln!("[uq/kds] Fetching VCEK from AMD KDS: {url}");
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("HTTP client: {e}"))?;
-
-    let resp = client
-        .get(&url)
-        .header("Accept", "application/x-pem-file")
-        .send()
-        .map_err(|e| format!("KDS request failed: {e}"))?;
-
-    if !resp.status().is_success() {
-        return Err(format!("KDS returned {}: {}", resp.status(), url));
-    }
+    let body = kds_get(&url)?;
 
     // KDS returns DER by default, PEM if Accept header requests it.
     // We request PEM but handle both.
-    let body = resp.bytes().map_err(|e| format!("KDS read body: {e}"))?;
-
     // Check if it's PEM or DER
     if body.starts_with(b"-----BEGIN") {
         // Parse PEM to DER
@@ -86,22 +126,7 @@ pub fn fetch_cert_chain_kind(product: &str, kind: &str) -> Result<(Vec<u8>, Vec<
 
     eprintln!("[uq/kds] Fetching {kind} cert chain from AMD KDS: {url}");
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("HTTP client: {e}"))?;
-
-    let resp = client
-        .get(&url)
-        .header("Accept", "application/x-pem-file")
-        .send()
-        .map_err(|e| format!("KDS cert chain request: {e}"))?;
-
-    if !resp.status().is_success() {
-        return Err(format!("KDS cert chain returned {}", resp.status()));
-    }
-
-    let body = resp.bytes().map_err(|e| format!("KDS read: {e}"))?;
+    let body = kds_get(&url)?;
     let pem_str = String::from_utf8_lossy(&body);
 
     // Parse PEM chain — contains ASK then ARK
