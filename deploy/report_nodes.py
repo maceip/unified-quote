@@ -157,7 +157,16 @@ def main():
                 entry["platform"] = parsed["platform_seen"]
             print(f"[report] {node['id']}: {verdict} ({detail})")
         else:
-            print(f"[report] {node['id']}: pending (no endpoint)")
+            # No live endpoint. Honor a config-declared status/detail (e.g. a
+            # known platform blocker or a planned node) instead of pretending
+            # it is merely "awaiting" a report.
+            if node.get("status"):
+                entry["verdict"] = node["status"]
+            if node.get("detail"):
+                entry["detail"] = node["detail"]
+            if node.get("measurement"):
+                entry["measurements"] = {"MEASUREMENT": node["measurement"]}
+            print(f"[report] {node['id']}: {entry['verdict']} (no endpoint)")
 
         nodes_out.append(entry)
 

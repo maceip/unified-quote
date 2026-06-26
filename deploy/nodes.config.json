@@ -35,10 +35,22 @@
     },
     {
       "id": "azure-cvm-ne",
-      "label": "Azure Confidential VM",
+      "label": "Azure Confidential VM (SEV-SNP)",
       "cloud": "azure",
       "region": "northeurope",
       "platform": "SevSnp",
+      "status": "blocked",
+      "detail": "azure cvms run under a paravisor (vTOM); the guest does not get raw /dev/sev-guest, so a uq-collected hardware quote is unavailable. attestation on azure goes through MAA (the guest fetches an SNP report via the paravisor's tpm/vTPM and MAA returns a JWT). a native azure collector (paravisor report -> uq eat) is the planned path; see deploy/azure-cvm.sh.",
+      "endpoint": null
+    },
+    {
+      "id": "gcp-tdx-usc1",
+      "label": "GCP Confidential VM (Intel TDX)",
+      "cloud": "gcp",
+      "region": "us-central1",
+      "platform": "Tdx",
+      "status": "planned",
+      "detail": "gcp c3 confidential vms expose intel tdx via configfs-tsm, which the uq tdx collector already supports. provisioning is gated on gcloud auth + a gcp project not present in this environment; deploy/gcp-tdx.sh is ready to run.",
       "endpoint": null
     }
   ]
