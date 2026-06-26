@@ -8,8 +8,8 @@
 //!       rustls TLS termination → attestation JSON
 //!
 //! Two commands:
-//!   bountynet enclave  — runs inside the enclave (vsock listener + TLS server)
-//!   bountynet proxy    — runs on the parent (TCP:443 → vsock bridge)
+//!   uq enclave  — runs inside the enclave (vsock listener + TLS server)
+//!   uq proxy    — runs on the parent (TCP:443 → vsock bridge)
 
 use anyhow::Result;
 use std::io::{Read, Write};

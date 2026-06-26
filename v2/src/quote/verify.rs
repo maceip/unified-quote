@@ -633,9 +633,19 @@ fn verify_snp_quote(
             // shared across the VCEK and VLEK chains for a product line.
             if let (Some(ref ask), Some(ref ark)) = (&ask_der, &ark_der) {
                 verify_cert_sig(ark, ark)?; // ARK is self-signed (RSA-PSS)
+                // Pin to the ARK for the exact product line. An unrecognized
+                // product is a hard error — we will not silently fall back to a
+                // different vendor root (that would let a Turin/other quote be
+                // checked against the Milan root and rejected for the wrong reason).
                 let expected_fp = match product {
+                    "Milan" => super::roots::AMD_ARK_MILAN_SHA256,
                     "Genoa" => super::roots::AMD_ARK_GENOA_SHA256,
-                    _ => super::roots::AMD_ARK_MILAN_SHA256,
+                    "Turin" => super::roots::AMD_ARK_TURIN_SHA256,
+                    other => {
+                        return Err(VerifyError::PlatformError(format!(
+                            "SNP: no pinned AMD ARK for product line '{other}'"
+                        )));
+                    }
                 };
                 if !super::roots::verify_root_fingerprint(ark, expected_fp) {
                     return Err(VerifyError::PlatformError(

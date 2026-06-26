@@ -20,12 +20,12 @@
 //! Captured 2026-04-14 during the first end-to-end hardware pass:
 //!
 //! - `tdx_stage0.cbor` / `tdx_stage1.cbor` — GCP c3-standard-4 TDX,
-//!   us-central1-a, Linux 6.17, stage 0 via `bountynet build`, stage 1
-//!   via `bountynet run` chaining stage 0.
+//!   us-central1-a, Linux 6.17, stage 0 via `uq build`, stage 1
+//!   via `uq run` chaining stage 0.
 //! - `snp_stage0.cbor` / `snp_stage1.cbor` — AWS c6a.xlarge SEV-SNP,
 //!   us-east-2, Ubuntu 24.04, same flow.
 //! - `nitro_stage0.cbor` — AWS m5.xlarge Nitro enclave (single-process
-//!   `bountynet enclave`), AL2023 parent, debug-mode enclave. No
+//!   `uq enclave`), AL2023 parent, debug-mode enclave. No
 //!   stage 1 on Nitro in this pass — the single-enclave flow produces
 //!   a stage 0 only. Chain-walking on Nitro is a follow-up that needs
 //!   a second enclave running `cmd_run`.
@@ -126,7 +126,7 @@ fn nitro_stage0_verifies() {
 /// self-hosted GitHub Actions workflow `attested-self-build.yml`
 /// running on a GCP TDX instance, on 2026-04-14, in response to the
 /// push of commit 2593db6 which added that very workflow file. This
-/// is the first time bountynet was built inside a TEE *as a CI step
+/// is the first time unified-quote was built inside a TEE *as a CI step
 /// of its own repository*, rather than by a hand-typed SSH command.
 ///
 /// Keeping this byte-identical copy in testdata is an archival

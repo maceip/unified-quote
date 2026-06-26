@@ -71,7 +71,7 @@ impl TeeProvider for TdxProvider {
 /// 4. Optionally read auxblob for cert chain
 /// 5. rmdir the report entry
 fn collect_via_configfs(report_data: &[u8; 64]) -> Result<TeeEvidence, TeeError> {
-    let report_name = format!("bountynet-{}", std::process::id());
+    let report_name = format!("unified-quote-{}", std::process::id());
     let report_dir = format!("{TSM_REPORT_BASE}/{report_name}");
 
     // Create the report directory

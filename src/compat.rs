@@ -62,9 +62,9 @@ pub struct CocoEvidence {
     pub evidence: String,
     /// Runtime data: nonce and TEE public key.
     pub runtime_data: CocoRuntimeData,
-    /// bountynet extensions (ignored by standard CoCo consumers).
+    /// unified-quote extensions (ignored by standard CoCo consumers).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bountynet: Option<BountynetExtension>,
+    pub uq: Option<UqExtension>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -75,7 +75,7 @@ pub struct CocoRuntimeData {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct BountynetExtension {
+pub struct UqExtension {
     pub value_x: String,
     pub unified_quote_hash: String,
     pub integrity_ok: bool,
@@ -102,7 +102,7 @@ impl UnifiedQuote {
                 nonce: hex::encode(self.nonce),
                 tee_pubkey: hex::encode(self.pubkey),
             },
-            bountynet: Some(BountynetExtension {
+            uq: Some(UqExtension {
                 value_x: hex::encode(self.value_x),
                 unified_quote_hash: hex::encode(self.platform_quote_hash),
                 integrity_ok: self.integrity_ok,

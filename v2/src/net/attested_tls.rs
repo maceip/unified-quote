@@ -65,7 +65,7 @@
 //!
 //! We mark the extension **non-critical**. Trade-off:
 //!
-//! - Attested-TLS-aware clients (our `bountynet check`) look for the
+//! - Attested-TLS-aware clients (our `uq check`) look for the
 //!   extension unconditionally, verify it, and fail-closed if it's
 //!   missing or invalid. Their guarantee is unchanged.
 //! - Attested-TLS-unaware clients see the extension, ignore it, and

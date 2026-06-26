@@ -13,7 +13,7 @@
 //! typically 24h). LE embeds the SCTs back into the final cert so
 //! browsers can verify them during handshake.
 //!
-//! For the bountynet flow, the CT property is structural: every time
+//! For the unified-quote flow, the CT property is structural: every time
 //! an enclave boots, it goes through ACME, gets a fresh LE cert for
 //! `<value_x_prefix>.aeon.site`, and that cert lands in a CT log.
 //! A malicious enclave variant either:

@@ -78,7 +78,7 @@ pub fn start_integrity_monitor(
             let current_x = match value_x::compute_value_x(&dir) {
                 Ok(x) => x,
                 Err(e) => {
-                    eprintln!("[bountynet/integrity] ERROR re-computing Value X: {e}");
+                    eprintln!("[uq/integrity] ERROR re-computing Value X: {e}");
                     continue;
                 }
             };
@@ -93,7 +93,7 @@ pub fn start_integrity_monitor(
             if !integrity_ok {
                 tampered.store(true, Ordering::SeqCst);
                 eprintln!(
-                    "[bountynet/integrity] ALERT: Value X changed!\n  boot: {}\n  now:  {}",
+                    "[uq/integrity] ALERT: Value X changed!\n  boot: {}\n  now:  {}",
                     hex::encode(boot_value_x),
                     hex::encode(current_x)
                 );
@@ -101,9 +101,9 @@ pub fn start_integrity_monitor(
                 // On TDX, extend RTMR2 to make the change visible in quotes
                 if !guard.rtmr_extended {
                     if let Err(e) = extend_rtmr2(&current_x) {
-                        eprintln!("[bountynet/integrity] Failed to extend RTMR2: {e}");
+                        eprintln!("[uq/integrity] Failed to extend RTMR2: {e}");
                     } else {
-                        eprintln!("[bountynet/integrity] RTMR2 extended — future quotes will reflect the change");
+                        eprintln!("[uq/integrity] RTMR2 extended — future quotes will reflect the change");
                         guard.rtmr_extended = true;
                     }
                 }
@@ -128,7 +128,7 @@ pub fn start_integrity_monitor(
 fn extend_rtmr2(new_value_x: &[u8; 48]) -> Result<(), String> {
     let hash = Sha256::digest(new_value_x);
     eprintln!(
-        "[bountynet/integrity] RTMR2 extension NOT AVAILABLE (no kernel interface). \
+        "[uq/integrity] RTMR2 extension NOT AVAILABLE (no kernel interface). \
          Tamper hash: {}. Defense: integrity_ok=false in EAT token.",
         hex::encode(hash)
     );
@@ -155,10 +155,10 @@ pub fn start_heartbeat(
                     let ts = q.timestamp;
                     let mut guard = quote_store.write().await;
                     *guard = Some(q);
-                    eprintln!("[bountynet/heartbeat] Quote refreshed at {ts}");
+                    eprintln!("[uq/heartbeat] Quote refreshed at {ts}");
                 }
                 Err(e) => {
-                    eprintln!("[bountynet/heartbeat] Failed to refresh: {e}");
+                    eprintln!("[uq/heartbeat] Failed to refresh: {e}");
                 }
             }
         }

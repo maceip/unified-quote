@@ -1,4 +1,4 @@
-# Bountynet Attested Runner
+# unified-quote Attested Runner
 
 ```text
       *         .              .      *           .        *
@@ -16,7 +16,7 @@
 
 ```text
 ╭────────────────────────────────────────────────────────────────╮
-│        ╭──────────── ✦ BOUNTYNET ✦ ────────────╮             │
+│        ╭──────────── ✦ UNIFIED-QUOTE ✦ ────────────╮             │
 │        │ trust the build // verify the machine │             │
 │        ╰──── confidential enclave // proof ────╯             │
 ├────────────────────────────────────────────────────────────────┤
@@ -25,7 +25,7 @@
 │                              │                                 │
 │                              ▼                                 │
 │ ╭────────────────────────────────────────────────────────────╮ │
-│ │ bountynet-shim (Rust, boots first)                        │ │
+│ │ uq-runner (Rust, boots first)                        │ │
 │ │                                                            │ │
 │ │ LAYER 1 // Application Identity                           │ │
 │ │   Value X = sha384(runner binary manifest)                │ │

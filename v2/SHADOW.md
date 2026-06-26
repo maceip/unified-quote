@@ -14,7 +14,7 @@ This document is the design. Code lives elsewhere when it exists.
 
 ## Why this exists
 
-Shadow attestation is the feature that makes bountynet useful to people
+Shadow attestation is the feature that makes unified-quote useful to people
 who do not care about TEEs or code signing. Without it, the story is
 "we run our own stuff in a TEE, you'd have to do the same." With it, the
 story is "add one workflow step, get a hardware-rooted rebuild witness
@@ -57,7 +57,7 @@ the abuse, identity, and billing rails have survived real use.
 The useful verifier claim is:
 
 > GitHub says workflow `repo@sha` produced artifact digest `A`.
-> BountyNet says an isolated TDX VM rebuilt the submitted source and
+> unified-quote says an isolated TDX VM rebuilt the submitted source and
 > produced artifact digest `A'`, CT, and Value X. If `A == A'`, the
 > normal GitHub build and the TEE rebuild agree. If not, the shadow
 > attestation is still valid, but the build is not reproducible or the
@@ -82,10 +82,10 @@ The useful verifier claim is:
 ## The core threat
 
 Running arbitrary code inside a TEE that shares any trust relationship
-with the rest of bountynet is an existential risk to the project. If a
+with the rest of unified-quote is an existential risk to the project. If a
 shadow build escapes its sandbox into the host, the attacker gets:
 
-- The GitHub self-hosted runner token for `maceip/bountynet-genesis`
+- The GitHub self-hosted runner token for `maceip/unified-quote`
 - Root on the machine running `bountynet-live.service`
 - The ability to issue fresh attestations from a compromised environment
   that still looks legitimate to any verifier that doesn't pin Value X
@@ -229,7 +229,7 @@ strict mode, and the server rejects any request > 10 MB outright.
 
 ### 7. Trust model undermining
 
-If every project on earth uses our shadow service, bountynet becomes
+If every project on earth uses our shadow service, unified-quote becomes
 the single vendor root for everyone's attestation chain. We are now
 the target of every advanced threat actor, and any compromise of the
 shadow host is a supply chain compromise for every downstream user.
@@ -373,7 +373,7 @@ through PoW + spend cap.
 
 For any request above the per-IP/ASN floor, the future design requires
 a tiny Lightning payment or a hash-locked on-chain deposit before the
-VM is spawned. This is the BountyNet-native answer: the shadow service
+VM is spawned. This is the unified-quote-native answer: the shadow service
 becomes the first place where "stake something you already have" shows
 up as a product surface instead of a thesis.
 

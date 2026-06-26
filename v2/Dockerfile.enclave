@@ -1,5 +1,5 @@
 FROM public.ecr.aws/amazonlinux/amazonlinux:2023-minimal
 RUN mkdir -p /tmp
-COPY bountynet-bin /usr/local/bin/bountynet
+COPY uq-bin /usr/local/bin/unified-quote
 COPY src/ /src/
-CMD ["sh", "-c", "bountynet enclave /src --cmd true 2>&1; sleep 600"]
+CMD ["sh", "-c", "uq enclave /src --cmd true 2>&1; sleep 600"]

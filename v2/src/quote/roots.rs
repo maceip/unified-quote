@@ -20,10 +20,18 @@ pub const AWS_NITRO_ROOT_SHA256: &str =
 pub const AMD_ARK_MILAN_SHA256: &str =
     "69d063b45344d26a2e94e1f4210de49ef555308287d4c174445c95639a540bcd";
 
-/// AMD ARK fingerprint for Genoa (SEV-SNP v5).
-/// Source: https://kdsintf.amd.com/vcek/v1/Genoa/cert_chain
+/// AMD ARK (Root Key) fingerprint for Genoa — SHA-256 of the DER-encoded
+/// self-signed `CN=ARK-Genoa` cert (verified against the live KDS chain).
+/// As with Milan, this same ARK roots both the VCEK and VLEK chains.
+/// Source: https://kdsintf.amd.com/vcek/v1/Genoa/cert_chain (2nd cert = ARK).
 pub const AMD_ARK_GENOA_SHA256: &str =
-    "5a600e367c89b26e7db78ce18e0aa94bdd67e0e80f74b9f5173e4e91ead34141";
+    "4c6598d19c18719c5dfd4a7d335f674e5bfe1d8f800cea2cf270c10d103db2f1";
+
+/// AMD ARK (Root Key) fingerprint for Turin — SHA-256 of the DER-encoded
+/// self-signed `CN=ARK-Turin` cert (verified against the live KDS chain).
+/// Source: https://kdsintf.amd.com/vcek/v1/Turin/cert_chain (2nd cert = ARK).
+pub const AMD_ARK_TURIN_SHA256: &str =
+    "1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a";
 
 /// Intel SGX Root CA fingerprint (SHA-256 of DER-encoded cert).
 /// Computed from the root cert in a real TDX quote's embedded cert chain.

@@ -257,7 +257,7 @@ impl SnpProvider {
 fn collect_via_configfs_tsm(report_data: &[u8; 64]) -> Result<TeeEvidence, TeeError> {
     use std::fs;
 
-    let report_name = format!("bountynet-snp-{}", std::process::id());
+    let report_name = format!("uq-snp-{}", std::process::id());
     let report_dir = format!("/sys/kernel/config/tsm/report/{report_name}");
 
     fs::create_dir(&report_dir)

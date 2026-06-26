@@ -24,7 +24,7 @@ set -euo pipefail
 #
 # Requirements:
 #   - Running inside a TEE (TDX, SNP, or Nitro)
-#   - bountynet-shim available in PATH (for TEE evidence collection)
+#   - uq-runner available in PATH (for TEE evidence collection)
 #   - git, sha384sum or openssl
 # ============================================================================
 
@@ -155,7 +155,7 @@ if [ "${TEE_PLATFORM}" = "tdx" ] && [ -d /sys/kernel/config/tsm/report ]; then
     echo "[stage0] TDX quote collected: ${#QUOTE_HEX} hex chars"
 else
     echo "[stage0] WARNING: TEE quote collection not available for ${TEE_PLATFORM} in this script"
-    echo "[stage0] Use bountynet-shim for full evidence collection"
+    echo "[stage0] Use uq-runner for full evidence collection"
     QUOTE_HEX=""
 fi
 

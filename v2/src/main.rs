@@ -524,7 +524,7 @@ fn cmd_build(args: &[String]) -> anyhow::Result<()> {
                     "mrtd": platform_measurement.as_ref().map(|m| hex::encode(m)),
                     "confidential_space_claims": {
                         "hwmodel": "GCP_INTEL_TDX",
-                        "swname": "BOUNTYNET",
+                        "swname": "UNIFIED-QUOTE",
                     }
                 }
             })
@@ -1000,6 +1000,10 @@ fn cmd_verify(args: &[String]) -> anyhow::Result<()> {
     let mut att_path: Option<String> = None;
     let mut source_dir: Option<PathBuf> = None;
     let mut artifact_path: Option<PathBuf> = None;
+    // Secure by default: a quote that does not chain to the pinned vendor root
+    // fails verification. This explicit, loudly-named flag is the only way to
+    // proceed without the hardware root-of-trust (e.g. offline / no-KDS checks).
+    let mut allow_unverified_chain = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -1010,6 +1014,9 @@ fn cmd_verify(args: &[String]) -> anyhow::Result<()> {
             "--artifact" => {
                 i += 1;
                 artifact_path = args.get(i).map(|s| PathBuf::from(s));
+            }
+            "--insecure-skip-chain" | "--no-chain" => {
+                allow_unverified_chain = true;
             }
             _ => {
                 if att_path.is_none() && !args[i].starts_with("--") {
@@ -1040,6 +1047,7 @@ fn cmd_verify(args: &[String]) -> anyhow::Result<()> {
         source_dir.as_deref(),
         artifact_path.as_deref(),
         canonical_binding,
+        allow_unverified_chain,
     )
 }
 
@@ -1048,6 +1056,7 @@ fn verify_attestation_json(
     source_dir: Option<&Path>,
     artifact_path: Option<&Path>,
     canonical_binding: Option<[u8; 32]>,
+    allow_unverified_chain: bool,
 ) -> anyhow::Result<()> {
     let platform_str = att_json["platform"].as_str().unwrap_or("");
     let ct_hex = att_json["source_hash"].as_str().unwrap_or("");
@@ -1140,8 +1149,13 @@ fn verify_attestation_json(
         );
     }
 
-    // Check 4: Verify TEE quote signature chain
-    // This is the cryptographic proof that the quote is from real hardware.
+    // Check 4: Verify TEE quote signature chain.
+    // This is THE cryptographic proof that the quote is from real hardware —
+    // the report signs back to a vendor key (VCEK/VLEK/Nitro), which chains to
+    // a fingerprint we pin (AMD ARK / Intel SGX root / AWS Nitro root). It is
+    // the hardware root-of-trust, so it is authoritative: if it fails, the
+    // receipt is not trustworthy and verification fails. The only way past it
+    // is the explicit --insecure-skip-chain flag (offline / no-KDS checks).
     eprintln!("[uq] Verifying TEE signature chain...");
     let platform = match platform_str {
         "Tdx" => Some(quote::Platform::Tdx),
@@ -1149,6 +1163,10 @@ fn verify_attestation_json(
         "Nitro" => Some(quote::Platform::Nitro),
         _ => None,
     };
+    // chain_verified == true ONLY when a real platform quote chains to the
+    // pinned vendor root. Receipts with no hardware platform (e.g. software
+    // witness) skip Check 4 entirely and never claim genuine hardware below.
+    let mut chain_verified = false;
     if let Some(p) = platform {
         let binding_arr: [u8; 32] = if binding_bytes.len() == 32 {
             binding_bytes[..32].try_into().unwrap_or([0u8; 32])
@@ -1161,13 +1179,28 @@ fn verify_attestation_json(
                 for (name, val) in &measurements {
                     eprintln!("[uq]   {}: {}", name, hex::encode(val));
                 }
+                chain_verified = true;
             }
             Err(e) => {
                 eprintln!("[uq] TEE signature chain: FAIL — {e}");
-                // Don't exit — the binding check above is the primary proof.
-                // Signature chain failure means we can't confirm it's real hardware,
-                // but the binding is still mathematically valid.
-                eprintln!("[uq] WARNING: quote may not be from genuine hardware");
+                if allow_unverified_chain {
+                    eprintln!(
+                        "[uq] WARNING: --insecure-skip-chain set — proceeding WITHOUT a \
+                         confirmed hardware root-of-trust. Do not trust this for release."
+                    );
+                } else {
+                    eprintln!("[uq]");
+                    eprintln!("[uq] === Verification FAILED ===");
+                    eprintln!(
+                        "[uq] The quote did not chain to the pinned {platform_str} vendor \
+                         root, so genuine hardware cannot be asserted."
+                    );
+                    eprintln!(
+                        "[uq] (For an offline / no-KDS check you can override with \
+                         --insecure-skip-chain.)"
+                    );
+                    std::process::exit(1);
+                }
             }
         }
     }
@@ -1229,7 +1262,18 @@ fn verify_attestation_json(
 
     eprintln!();
     eprintln!("[uq] === Verification Complete ===");
-    eprintln!("[uq] This artifact was built from this source inside genuine {platform_str} hardware.");
+    if chain_verified {
+        eprintln!(
+            "[uq] This artifact was built from this source inside genuine {platform_str} hardware."
+        );
+    } else {
+        // Reached only via --insecure-skip-chain or a non-hardware (software
+        // witness) receipt. Bindings hold, but we make no genuine-hardware claim.
+        eprintln!(
+            "[uq] Bindings and measurements are internally consistent, but the hardware \
+             root-of-trust was NOT confirmed."
+        );
+    }
 
     Ok(())
 }
@@ -1458,9 +1502,9 @@ async fn cmd_run(args: &[String]) -> anyhow::Result<()> {
             .arg("-c")
             .arg(&cmd)
             .current_dir(&work_dir)
-            .env("BOUNTYNET_VALUE_X", hex::encode(current_x))
-            .env("BOUNTYNET_DOMAIN", &domain)
-            .env("BOUNTYNET_STAGE", "1")
+            .env("UQ_VALUE_X", hex::encode(current_x))
+            .env("UQ_DOMAIN", &domain)
+            .env("UQ_STAGE", "1")
             .status()?;
         eprintln!("[uq] Workload exited: {status}");
     } else {
@@ -1959,7 +2003,7 @@ fn detect_build_cmd(dir: &Path) -> String {
     if dir.join("Cargo.toml").exists() {
         "cargo build --release".into()
     } else if dir.join("Dockerfile").exists() {
-        "docker build -t bountynet-build .".into()
+        "docker build -t uq-build .".into()
     } else if dir.join("package.json").exists() {
         "npm ci && npm run build".into()
     } else if dir.join("Makefile").exists() {
@@ -2054,7 +2098,7 @@ fn append_to_log(output_dir: &Path, att_path: &Path, value_x: &[u8; 48]) -> bool
 
 /// Create a temporary directory for the build workspace.
 fn tempdir() -> anyhow::Result<PathBuf> {
-    let dir = std::env::temp_dir().join(format!("bountynet-build-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("uq-build-{}", std::process::id()));
     if dir.exists() {
         std::fs::remove_dir_all(&dir)?;
     }

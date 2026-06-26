@@ -48,9 +48,9 @@ on-disk format does not change.
 
 ## How it's used
 
-1. `bountynet build` in a TEE emits an attestation with a Value X.
+1. `uq build` in a TEE emits an attestation with a Value X.
 2. Maintainer reviews, runs the `registry-sign` workflow, entry is committed.
-3. `bountynet check https://<domain>` fetches the attestation, verifies
+3. `uq check https://<domain>` fetches the attestation, verifies
    the TEE quote, looks up Value X in the registry, reports status:
    - `recommended` — green
    - `deprecated`  — yellow (grace period, client policy decides)

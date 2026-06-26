@@ -1,4 +1,4 @@
-//! bountynet-shim: Attestation wrapper for GitHub Actions self-hosted runners.
+//! uq-runner: Attestation wrapper for GitHub Actions self-hosted runners.
 //!
 //! This binary:
 //! 1. Detects which TEE it's running in (Nitro / SEV-SNP / TDX)
@@ -50,23 +50,23 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(ATTEST_PORT);
 
     // --- Step 1: Detect TEE platform ---
-    eprintln!("[bountynet] Detecting TEE platform...");
+    eprintln!("[uq] Detecting TEE platform...");
     let tee_provider = match detect_tee() {
         Ok(p) => {
-            eprintln!("[bountynet] Detected: {:?}", p.platform());
+            eprintln!("[uq] Detected: {:?}", p.platform());
             Some(p)
         }
         Err(e) => {
-            eprintln!("[bountynet] WARNING: No TEE detected ({e}). Running in insecure mode.");
-            eprintln!("[bountynet] Attestation will be unavailable.");
+            eprintln!("[uq] WARNING: No TEE detected ({e}). Running in insecure mode.");
+            eprintln!("[uq] Attestation will be unavailable.");
             None
         }
     };
 
     // --- Step 2: Compute Value X ---
-    eprintln!("[bountynet] Computing Value X from {}...", runner_dir.display());
+    eprintln!("[uq] Computing Value X from {}...", runner_dir.display());
     let value_x_hash = value_x::compute_value_x(&runner_dir)?;
-    eprintln!("[bountynet] Value X = {}", hex::encode(value_x_hash));
+    eprintln!("[uq] Value X = {}", hex::encode(value_x_hash));
 
     // --- Step 3: Generate TEE-derived signing key ---
     // In production, this key should be derived deterministically from
@@ -75,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
     let signing_key = SigningKey::generate(&mut OsRng);
     let pubkey_bytes = signing_key.verifying_key().to_bytes();
     eprintln!(
-        "[bountynet] TEE signing pubkey = {}",
+        "[uq] TEE signing pubkey = {}",
         hex::encode(pubkey_bytes)
     );
 
@@ -108,11 +108,11 @@ async fn main() -> anyhow::Result<()> {
                     nonce,
                     &signing_key,
                 );
-                eprintln!("[bountynet] UnifiedQuote generated.");
+                eprintln!("[uq] UnifiedQuote generated.");
                 Some(uq)
             }
             Err(e) => {
-                eprintln!("[bountynet] WARNING: Failed to collect TEE evidence: {e}");
+                eprintln!("[uq] WARNING: Failed to collect TEE evidence: {e}");
                 None
             }
         }
@@ -163,7 +163,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = attest::attestation_router(attest_state);
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{attest_port}")).await?;
-    eprintln!("[bountynet] Attestation endpoint listening on :{attest_port}");
+    eprintln!("[uq] Attestation endpoint listening on :{attest_port}");
 
     // Spawn the attestation server in the background
     tokio::spawn(async move {
@@ -171,20 +171,20 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // --- Step 7: Start the GitHub Actions runner ---
-    eprintln!("[bountynet] Starting GitHub Actions runner...");
+    eprintln!("[uq] Starting GitHub Actions runner...");
     let runner_bin = runner_dir.join("run.sh");
 
     if runner_bin.exists() {
         let status = Command::new(&runner_bin)
             .current_dir(&runner_dir)
-            .env("BOUNTYNET_VALUE_X", hex::encode(value_x_hash))
-            .env("BOUNTYNET_ATTEST_PORT", attest_port.to_string())
+            .env("UQ_VALUE_X", hex::encode(value_x_hash))
+            .env("UQ_ATTEST_PORT", attest_port.to_string())
             .status()?;
 
-        eprintln!("[bountynet] Runner exited with: {status}");
+        eprintln!("[uq] Runner exited with: {status}");
     } else {
         eprintln!(
-            "[bountynet] Runner not found at {}. Running attestation endpoint only.",
+            "[uq] Runner not found at {}. Running attestation endpoint only.",
             runner_bin.display()
         );
         // Keep the process alive for the attestation endpoint

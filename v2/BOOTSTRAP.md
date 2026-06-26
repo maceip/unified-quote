@@ -89,18 +89,18 @@ which should allow full control over the measurement chain.
 **Tested path (2026-05-01):** `Standard_DC4as_v5` Azure Confidential VM
 using Canonical's `22_04-lts-cvm` image in `northeurope`. The VM
 provisioned and booted with AMD SEV memory encryption, but Azure's
-vTOM/paravisor model did not expose bountynet's current raw SNP evidence
+vTOM/paravisor model did not expose unified-quote's current raw SNP evidence
 interfaces:
 
 ```text
 Memory Encryption Features active: AMD SEV
 ls: cannot access '/dev/sev-guest': No such file or directory
-mkdir /sys/kernel/config/tsm/report/bountynet-probe: No such device or address
+mkdir /sys/kernel/config/tsm/report/uq-probe: No such device or address
 ```
 
 Azure stores a boot-time hardware report behind the vTPM / Microsoft
 Azure Attestation path. That is useful evidence, but it is not yet a
-fresh bountynet quote because the current producer needs to place
+fresh unified-quote quote because the current producer needs to place
 `EatToken::binding_bytes()` into report data immediately before stage 0
 and stage 1 quote collection. Until an Azure MAA/vTOM evidence provider
 is implemented, or a raw SNP/TDX quote SKU is available, Azure remains

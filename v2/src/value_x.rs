@@ -1,5 +1,5 @@
 //! Value X: a directory tree hash used as the application-layer identity
-//! across bountynet. Promoted from `main.rs` so consumers like
+//! across unified-quote. Promoted from `main.rs` so consumers like
 //! `bountynet-shadow`'s in-TEE agent can reuse the same primitive instead
 //! of reimplementing it (and drifting).
 

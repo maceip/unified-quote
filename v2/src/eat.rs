@@ -1,5 +1,5 @@
 //! EAT (Entity Attestation Token) — the canonical wire format for a
-//! bountynet attestation.
+//! unified-quote attestation.
 //!
 //! An EAT carries everything a verifier needs to decide whether a remote
 //! TEE is trustworthy: the application identity (Value X), the raw

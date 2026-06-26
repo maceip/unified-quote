@@ -554,7 +554,7 @@ fn verify_snp_quote(
                         }
                     }
                     Err(e) => {
-                        eprintln!("[bountynet/verify] AMD KDS fetch failed: {e}");
+                        eprintln!("[uq/verify] AMD KDS fetch failed: {e}");
                     }
                 }
             }
@@ -919,7 +919,7 @@ fn verify_tdx_quote(
                                     super::roots::INTEL_SGX_ROOT_SHA256,
                                 );
                                 if !chain_ok {
-                                    eprintln!("[bountynet/verify] TDX: Intel root CA fingerprint mismatch");
+                                    eprintln!("[uq/verify] TDX: Intel root CA fingerprint mismatch");
                                 }
                             }
                             chain_verified = chain_ok;

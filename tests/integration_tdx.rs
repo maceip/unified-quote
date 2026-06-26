@@ -6,8 +6,8 @@
 //! SECURITY NOTE: signing_key in testdata is TEST-ONLY (pubkey hash baked into
 //! the TDX quote's REPORTDATA during capture). No security value.
 
-use bountynet_shim::quote::verify::verify_unified_quote;
-use bountynet_shim::quote::{Platform, UnifiedQuote};
+use uq_runner::quote::verify::verify_unified_quote;
+use uq_runner::quote::{Platform, UnifiedQuote};
 use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha384};
 

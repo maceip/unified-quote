@@ -44,7 +44,7 @@ pub fn detect_tee() -> Result<Box<dyn TeeProvider>, TeeError> {
     let tsm_report = Path::new("/sys/kernel/config/tsm/report");
     if tsm_report.exists() {
         // Create a temporary report entry to read the provider
-        let probe_dir = tsm_report.join("bountynet-detect");
+        let probe_dir = tsm_report.join("uq-detect");
         if std::fs::create_dir(&probe_dir).is_ok() {
             let provider = std::fs::read_to_string(probe_dir.join("provider"))
                 .unwrap_or_default()

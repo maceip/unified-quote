@@ -5,7 +5,7 @@ on:
 
 jobs:
   attest-test:
-    runs-on: [self-hosted, bountynet, tee]
+    runs-on: [self-hosted, unified-quote, tee]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -16,12 +16,12 @@ jobs:
           ls -la /dev/tdx* /dev/sev* /dev/nsm 2>/dev/null || echo "No TEE devices visible (expected in container)"
           echo ""
           echo "=== Environment ==="
-          echo "BOUNTYNET_VALUE_X=${BOUNTYNET_VALUE_X:-not set}"
-          echo "BOUNTYNET_ATTEST_PORT=${BOUNTYNET_ATTEST_PORT:-not set}"
+          echo "UQ_VALUE_X=${UQ_VALUE_X:-not set}"
+          echo "UQ_ATTEST_PORT=${UQ_ATTEST_PORT:-not set}"
 
       - name: Query attestation endpoint
         run: |
-          ATTEST_PORT="${BOUNTYNET_ATTEST_PORT:-9384}"
+          ATTEST_PORT="${UQ_ATTEST_PORT:-9384}"
           echo "=== Health Check ==="
           curl -sf "http://localhost:${ATTEST_PORT}/health" && echo " OK" || echo " FAILED"
 
@@ -48,7 +48,7 @@ jobs:
 
       - name: Verify attestation locally
         run: |
-          ATTEST_PORT="${BOUNTYNET_ATTEST_PORT:-9384}"
+          ATTEST_PORT="${UQ_ATTEST_PORT:-9384}"
           echo "=== Remote Attestation Verification ==="
 
           # Fetch the full quote
@@ -68,11 +68,11 @@ jobs:
           echo ""
 
           # Compare Value X with the environment variable set by the shim
-          if [ "${BOUNTYNET_VALUE_X:-}" = "${VALUE_X}" ]; then
+          if [ "${UQ_VALUE_X:-}" = "${VALUE_X}" ]; then
             echo "Value X matches shim environment: PASS"
           else
             echo "Value X from endpoint: ${VALUE_X}"
-            echo "Value X from env:      ${BOUNTYNET_VALUE_X:-not set}"
+            echo "Value X from env:      ${UQ_VALUE_X:-not set}"
             echo "(Mismatch is OK if env not set)"
           fi
 

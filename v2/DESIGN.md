@@ -77,15 +77,15 @@ requirement; the split is what matters.
 
 **How this shapes our work:**
 
-- `bountynet check` should not re-verify the full quote chain on every
+- `uq check` should not re-verify the full quote chain on every
   poll. First successful verification caches
   `(domain, pubkey_hash, value_x, not_after)`. Subsequent checks do a
   TLS handshake + cached-pubkey comparison and short-circuit. Full
   re-verify happens on expiry, on anomaly, or on explicit `--force`.
-- Policy gates (KMS, Vault, the future `bountynet-gate`) follow the
+- Policy gates (KMS, Vault, the future `uq-gate`) follow the
   same pattern. Expensive check admits a key to a cache; cheap
   signature check grants access afterwards.
-- This is how a BountyNet-style agent network makes thousands of
+- This is how a unified-quote-style agent network makes thousands of
   requests per second without grinding to a halt on attestation
   verification: agents get verified once by whatever trusted verifier
   their use case requires, they're cheap to talk to from then on.
@@ -118,7 +118,7 @@ Andromeda exposes four precompiles: `localRandom`, `volatileSet/Get`,
 don't see `/dev/attestation/quote`, don't parse SGX quote bytes. They
 see four function calls.
 
-**How this shapes our work:** `bountynet-gate` (the policy evaluator)
+**How this shapes our work:** `uq-gate` (the policy evaluator)
 gets a business-card-sized public API. No frameworks. No configuration
 DSLs. A consumer calls `gate.check(eat_token, policy) -> Result<Claims>`
 and that's the whole interface.
@@ -205,7 +205,7 @@ the payload, and document that the flow itself is industry convention.
   CT = public, append-only witness that a given Value X ran at a given
   time. A malicious enclave modifier either gets logged or is
   unreachable (no cert, no clients).
-- `bountynet check` verifies both the attested-TLS attestation (primary)
+- `uq check` verifies both the attested-TLS attestation (primary)
   and the SCTs on the LE cert (secondary, catches deployment anomalies
   that impersonate legit Value X values via a different domain).
 
@@ -222,12 +222,12 @@ the payload, and document that the flow itself is industry convention.
 
 ### Build-once-then-cache is the performance primitive
 
-- First `bountynet check` for a domain: full quote chain verification,
+- First `uq check` for a domain: full quote chain verification,
   ~10-100ms depending on platform.
 - Subsequent checks: TLS handshake + cached-pubkey comparison, sub-ms.
 - Cache keyed by `(domain, pubkey_hash, value_x, not_after)`.
 - Cache invalidation: expiry, on-demand flag, or signature mismatch.
-- Same pattern applies to `bountynet-gate` (KMS / Vault / future
+- Same pattern applies to `uq-gate` (KMS / Vault / future
   services): expensive verify once, cheap check many times.
 
 ### Stage 0 vs Stage 1 (the pivot we're in the middle of)
@@ -265,7 +265,7 @@ the payload, and document that the flow itself is industry convention.
 3. Attested-TLS cert generation: enclave-held TLS key,
    `sha256(tls_spki)` in report_data, EAT in X.509 ext `2.23.133.5.4.9`
    (non-critical per rustls trade-off) — **done**.
-4. Attested-TLS verifier in `bountynet check`: cert → extension → EAT
+4. Attested-TLS verifier in `uq check`: cert → extension → EAT
    → quote → SPKI binding → registry lookup — **done**.
 5. Source identity hardening: symlinks rejected, path separators
    canonicalized, and binding-invariant checks fail closed — **done**.
@@ -277,7 +277,7 @@ the payload, and document that the flow itself is industry convention.
    artifact — **done, unsigned entries remain informational only**.
 10. Dual-cert wiring: LE cert and self-signed attested-TLS cert both
    served from the enclave, selected by SNI / ALPN.
-11. `bountynet-gate` extraction: pull the policy evaluator out of
+11. `uq-gate` extraction: pull the policy evaluator out of
     `cmd_enclave` into a standalone module with a business-card API.
 12. Stage 0 output migration: stage 0 produces CBOR EAT alongside
     JSON, so the verifier has one canonical proof format — **done**.

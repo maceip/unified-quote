@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ===========================================================================
-# Deploy an Azure Confidential VM for bountynet hardware validation.
+# Deploy an Azure Confidential VM for unified-quote hardware validation.
 #
 # Prerequisites:
 #   - Azure CLI authenticated: az login
@@ -13,16 +13,16 @@ set -euo pipefail
 #
 # Optional environment overrides:
 #   AZURE_LOCATION=northeurope
-#   AZURE_RESOURCE_GROUP=bountynet-tee-validation
-#   VM_NAME=bountynet-azure-snp
+#   AZURE_RESOURCE_GROUP=uq-tee-validation
+#   VM_NAME=uq-azure-snp
 #   VM_SIZE=Standard_DC4as_v5
 #   ADMIN_USERNAME=azureuser
 #   AZURE_IMAGE='Canonical:0001-com-ubuntu-confidential-vm-jammy:22_04-lts-cvm:latest'
 # ===========================================================================
 
 LOCATION="${AZURE_LOCATION:-northeurope}"
-RESOURCE_GROUP="${AZURE_RESOURCE_GROUP:-bountynet-tee-validation}"
-VM_NAME="${VM_NAME:-bountynet-azure-snp}"
+RESOURCE_GROUP="${AZURE_RESOURCE_GROUP:-uq-tee-validation}"
+VM_NAME="${VM_NAME:-uq-azure-snp}"
 VM_SIZE="${VM_SIZE:-Standard_DC4as_v5}"
 ADMIN_USERNAME="${ADMIN_USERNAME:-azureuser}"
 IMAGE="${AZURE_IMAGE:-Canonical:0001-com-ubuntu-confidential-vm-jammy:22_04-lts-cvm:latest}"
@@ -90,14 +90,14 @@ echo "  VM:        ${VM_NAME}"
 echo "  Public IP: ${PUBLIC_IP}"
 echo ""
 echo "Next validation steps:"
-echo "  scp v2/target/release/bountynet ${ADMIN_USERNAME}@${PUBLIC_IP}:~/bountynet"
+echo "  scp v2/target/release/uq ${ADMIN_USERNAME}@${PUBLIC_IP}:~/uq"
 echo "  ssh ${ADMIN_USERNAME}@${PUBLIC_IP}"
 echo "  ls /dev/sev-guest /sys/kernel/config/tsm/report 2>&1"
 echo ""
 echo "Note: Azure DCasv5 CVMs may use the vTOM/paravisor path and not expose"
 echo "      raw SNP report collection to the guest. If /dev/sev-guest is absent"
-echo "      and configfs-tsm report creation fails, bountynet needs an Azure"
+echo "      and configfs-tsm report creation fails, unified-quote needs an Azure"
 echo "      MAA/vTOM collector before stage0/stage1 can be marked verified."
 echo ""
-echo "  sudo ~/bountynet build ~/source --cmd 'echo stage0 build' --output ~/out"
-echo "  sudo ~/bountynet run ~/source --attestation ~/out/attestation.cbor"
+echo "  sudo ~/uq build ~/source --cmd 'echo stage0 build' --output ~/out"
+echo "  sudo ~/uq run ~/source --attestation ~/out/attestation.cbor"

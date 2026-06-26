@@ -1,8 +1,8 @@
 # ===========================================================================
-# bountynet-genesis: TEE-attested GitHub Actions runner
+# unified-quote: TEE-attested GitHub Actions runner
 # ===========================================================================
 # Multi-stage build:
-#   Stage 1: Build bountynet-shim from Rust source
+#   Stage 1: Build uq-runner from Rust source
 #   Stage 2: Download GitHub Actions runner
 #   Stage 3: Assemble minimal runtime image
 # ===========================================================================
@@ -16,8 +16,8 @@ COPY src/ src/
 COPY v2/ v2/
 
 # Build in release mode
-RUN cargo build --release --bin bountynet-shim && \
-    strip target/release/bountynet-shim
+RUN cargo build --release --bin uq-runner && \
+    strip target/release/uq-runner
 
 # --- Stage 2: Download GitHub Actions runner ---
 FROM debian:bookworm-slim AS runner-dl
@@ -52,8 +52,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Create runner user (GitHub runner refuses to run as root)
 RUN useradd -m -d /home/runner -s /bin/bash runner
 
-# Copy bountynet-shim
-COPY --from=builder /build/target/release/bountynet-shim /usr/local/bin/bountynet-shim
+# Copy uq-runner
+COPY --from=builder /build/target/release/uq-runner /usr/local/bin/uq-runner
 
 # Copy GitHub Actions runner
 COPY --from=runner-dl /opt/actions-runner /opt/actions-runner

@@ -90,7 +90,7 @@ pub enum TrustedIdentity {
     /// Sigstore keyless signer, pinned by Fulcio cert subject.
     /// Matches any workflow identity matching (issuer, subject_pattern).
     /// `subject_pattern` is a glob — e.g.,
-    ///   `https://github.com/maceip/bountynet-runner/.github/workflows/registry-sign.yml@refs/heads/main`
+    ///   `https://github.com/maceip/uq-runner/.github/workflows/registry-sign.yml@refs/heads/main`
     /// or a looser match for downstream users.
     SigstoreKeyless {
         issuer: String,
@@ -127,13 +127,13 @@ impl TrustRoot {
     /// The project's own default trust root: our GitHub workflow signing
     /// via Sigstore keyless. Downstream users should NOT use this — they
     /// should build their own `TrustRoot` pointing at their own signers.
-    /// This exists so `bountynet check` of our own runner works out of
+    /// This exists so `uq check` of our own runner works out of
     /// the box without a config file.
-    pub fn bountynet_default() -> Self {
+    pub fn uq_default() -> Self {
         Self::empty().with(TrustedIdentity::SigstoreKeyless {
             issuer: "https://token.actions.githubusercontent.com".to_string(),
             subject_pattern:
-                "https://github.com/maceip/bountynet-runner/.github/workflows/registry-sign.yml@refs/heads/main"
+                "https://github.com/maceip/uq-runner/.github/workflows/registry-sign.yml@refs/heads/main"
                     .to_string(),
         })
     }
@@ -162,9 +162,23 @@ impl Registry {
             if path.extension().and_then(|s| s.to_str()) != Some("json") {
                 continue;
             }
-            let body = std::fs::read_to_string(&path)?;
-            let entry: Entry = serde_json::from_str(&body)
-                .map_err(|err| anyhow::anyhow!("{}: {err}", path.display()))?;
+            // One malformed file must not sink the whole registry: skip files
+            // that aren't valid UTF-8 JSON (e.g. a stray binary), reporting each,
+            // rather than failing the entire load.
+            let body = match std::fs::read(&path).ok().and_then(|b| String::from_utf8(b).ok()) {
+                Some(s) => s,
+                None => {
+                    eprintln!("[uq] Registry: skipping {} (not valid UTF-8)", path.display());
+                    continue;
+                }
+            };
+            let entry: Entry = match serde_json::from_str(&body) {
+                Ok(e) => e,
+                Err(err) => {
+                    eprintln!("[uq] Registry: skipping {} ({err})", path.display());
+                    continue;
+                }
+            };
             let sig_state = Self::check_sidecar(&path, &body, &trust_root)?;
             entries.insert(entry.value_x.clone(), (entry, sig_state));
         }
@@ -176,9 +190,9 @@ impl Registry {
 
     /// Default load: look for the project's registry directory and use
     /// the project's default `TrustRoot`. This is the path
-    /// `bountynet check` takes when no config is provided.
+    /// `uq check` takes when no config is provided.
     pub fn load_default() -> anyhow::Result<Self> {
-        let trust_root = TrustRoot::bountynet_default();
+        let trust_root = TrustRoot::uq_default();
         let mut merged = Self {
             entries: HashMap::new(),
             trust_root: trust_root.clone(),
@@ -196,7 +210,9 @@ impl Registry {
         // same trust state the repository visibly publishes.
         for c in [PathBuf::from("registry.json")] {
             if c.exists() && c.is_file() {
-                merged.load_legacy_registry_json(&c)?;
+                if let Err(e) = merged.load_legacy_registry_json(&c) {
+                    eprintln!("[uq] Registry: skipping legacy {} ({e})", c.display());
+                }
             }
         }
 
@@ -336,7 +352,7 @@ impl Registry {
     }
 }
 
-/// Human-readable summary of a lookup result. Used by `bountynet check`.
+/// Human-readable summary of a lookup result. Used by `uq check`.
 pub fn describe(lookup: &Lookup) -> String {
     match lookup {
         Lookup::Found { entry, signature } => {

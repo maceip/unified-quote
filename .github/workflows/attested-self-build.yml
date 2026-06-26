@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   attested-build:
-    runs-on: [self-hosted, tdx, bountynet]
+    runs-on: [self-hosted, tdx, unified-quote]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,9 +34,9 @@ jobs:
           uname -a
           echo "TEE device probe:"
           ls -la /dev/tdx_guest /sys/kernel/config/tsm/report 2>&1 || true
-          BIN="$(command -v uq || command -v bountynet || true)"
+          BIN="$(command -v uq || command -v unified-quote || true)"
           if [ -z "$BIN" ]; then
-            echo "No uq or legacy bountynet binary on runner"
+            echo "No uq or legacy unified-quote binary on runner"
             exit 1
           fi
           echo "unified-quote binary: $BIN"

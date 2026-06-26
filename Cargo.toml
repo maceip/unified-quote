@@ -1,14 +1,14 @@
 # The canonical library + `uq` verifier live in the `v2/` member crate
 # (package `unified-quote`). This makes it importable as a git dependency by
 # the higher layers (attestation-service, attested-workload, cvm-agent).
-# The root `bountynet-shim` package is the legacy TEE-attested GitHub Actions
+# The root `uq-runner` package is the legacy TEE-attested GitHub Actions
 # runner image (see Dockerfile); kept as a workspace member.
 [workspace]
 members = ["v2"]
 resolver = "2"
 
 [package]
-name = "bountynet-shim"
+name = "uq-runner"
 version = "0.1.0"
 edition = "2021"
 description = "Attestation shim for GitHub Actions runners in TEEs"

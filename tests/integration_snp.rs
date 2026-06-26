@@ -8,8 +8,8 @@
 //! It has no security value — the platform quote itself is public. The key
 //! exists solely so UnifiedQuote signature verification works in tests.
 
-use bountynet_shim::quote::verify::verify_unified_quote;
-use bountynet_shim::quote::{Platform, UnifiedQuote};
+use uq_runner::quote::verify::verify_unified_quote;
+use uq_runner::quote::{Platform, UnifiedQuote};
 use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha384};
 
@@ -31,7 +31,7 @@ fn load_snp_test_data() -> (Vec<u8>, SigningKey) {
 #[test]
 fn test_snp_layer2_verification() {
     let (snp_report, signing_key) = load_snp_test_data();
-    let value_x: [u8; 48] = Sha384::digest(b"bountynet-snp-test").into();
+    let value_x: [u8; 48] = Sha384::digest(b"uq-snp-test").into();
     let nonce = [0xEEu8; 32];
 
     println!("SNP report size: {} bytes", snp_report.len());

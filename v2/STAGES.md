@@ -137,7 +137,7 @@ The runtime platform provides the execution trust.
 | Stage 1 platform | Firmware verification | Our code verification |
 |------------------|----------------------|----------------------|
 | GCP TDX | Google endorsement (MRTD) | RTMR[1-3] from source |
-| Azure SNP (tested DCasv5 path) | Azure vTOM/paravisor + vTPM/MAA path; not supported by current raw collector | Not yet verified by bountynet |
+| Azure SNP (tested DCasv5 path) | Azure vTOM/paravisor + vTPM/MAA path; not supported by current raw collector | Not yet verified by unified-quote |
 | Azure SNP (custom IGVM target) | Our OVMF via IGVM (MEASUREMENT from source) | Included in MEASUREMENT |
 | Azure TDX | Our OVMF (MRTD from source) | RTMR[1-3] from source |
 | AWS SNP | SNP MEASUREMENT (firmware) + NitroTPM (kernel) | PCRs via NitroTPM, linked to SNP report |
@@ -152,6 +152,6 @@ End-to-end on real hardware, not simulated:
 - **Nitro full stack**: build inside enclave, TLS inside enclave via vsock, Let's Encrypt cert via TLS-ALPN-01, KMS integration with real PCR0 enforcement, remote verification from a laptop
 - **Reproducible builds**: two `nitro-cli build-enclave` from the same source produce identical PCR0
 - **KMS upgrade ceremony**: NodeA (PCR0 A) gets secret, NodeA' (PCR0 B) denied — hardware identity enforced
-- **GitHub Action**: `maceip/bountynet-genesis/v2/action` tested on real workflow, correctly refuses on non-TEE runners
-- **One-command verify**: `bountynet verify --remote https://<value_x>.aeon.site` from any machine
+- **GitHub Action**: `maceip/unified-quote/v2/action` tested on real workflow, correctly refuses on non-TEE runners
+- **One-command verify**: `uq verify --remote https://<value_x>.aeon.site` from any machine
 - **Azure result (2026-05-01)**: `Standard_DC4as_v5` CVM provisions and boots with AMD SEV memory encryption, but `/dev/sev-guest` is absent and configfs-tsm report creation fails. Azure is tested, not verified, until an Azure MAA/vTOM provider or raw quote SKU exists.

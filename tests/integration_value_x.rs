@@ -3,7 +3,7 @@
 //! Downloads or uses a pre-existing runner installation to verify that
 //! compute_value_x produces a deterministic hash over the runner image.
 
-use bountynet_shim::quote::value_x::compute_value_x;
+use uq_runner::quote::value_x::compute_value_x;
 use std::path::Path;
 
 const RUNNER_DIR: &str = "/tmp/actions-runner";

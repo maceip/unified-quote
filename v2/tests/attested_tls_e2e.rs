@@ -13,7 +13,7 @@
 //! The only thing missing from a real hardware run is the platform
 //! quote signature chain — the "quote" here is a fabricated blob whose
 //! first 32 bytes are the expected binding. Once a real TEE runs
-//! `bountynet enclave`, the same flow produces a genuine quote whose
+//! `uq enclave`, the same flow produces a genuine quote whose
 //! AMD/Intel signature chain verifies.
 
 use unified_quote::eat::{BuildComponents, EatToken};

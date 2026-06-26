@@ -13,8 +13,8 @@
 //! 5. Extract Value X — same value regardless of platform
 //! 6. Produce the on-chain compact form (~180 bytes)
 
-use bountynet_shim::quote::verify::{verify_unified_quote, VerifyError};
-use bountynet_shim::quote::{OnChainAttestation, Platform, UnifiedQuote};
+use uq_runner::quote::verify::{verify_unified_quote, VerifyError};
+use uq_runner::quote::{OnChainAttestation, Platform, UnifiedQuote};
 use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha256, Sha384};
 
@@ -148,7 +148,7 @@ fn test_unified_quote_is_platform_agnostic() {
 #[test]
 fn test_unified_quote_json_serialization() {
     let (nitro_doc, signing_key) = load_nitro_test_data();
-    let value_x: [u8; 48] = Sha384::digest(b"bountynet-test").into();
+    let value_x: [u8; 48] = Sha384::digest(b"unified-quote-test").into();
     let nonce = [0xABu8; 32];
 
     let quote = UnifiedQuote::new(Platform::Nitro, value_x, nitro_doc, nonce, &signing_key);

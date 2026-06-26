@@ -72,7 +72,7 @@ fn collect_signed_attestation(tool_path: &str, nonce: &[u8]) -> Result<TpmAttest
     use std::io::Write;
 
     // Write nonce to a temp file
-    let nonce_path = "/tmp/bountynet-tpm-nonce";
+    let nonce_path = "/tmp/uq-tpm-nonce";
     std::fs::write(nonce_path, nonce).map_err(|e| format!("write nonce: {e}"))?;
 
     // Call nitro-tpm-attest with nonce

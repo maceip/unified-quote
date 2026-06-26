@@ -27,9 +27,9 @@
 //! On a real TEE instance:
 //!
 //! ```bash
-//! bountynet enclave ./target-source --cmd "cargo build --release"
+//! uq enclave ./target-source --cmd "cargo build --release"
 //! # In another terminal, from the parent:
-//! bountynet proxy --cid <enclave-cid>
+//! uq proxy --cid <enclave-cid>
 //! # From a third machine:
 //! curl --cacert /dev/null --insecure https://<valuex>.aeon.site/eat \
 //!   -H "Accept: application/eat+cbor" -o att.cbor

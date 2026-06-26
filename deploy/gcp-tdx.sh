@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ===========================================================================
-# Deploy bountynet-genesis runner on GCP TDX Confidential VM
+# Deploy unified-quote runner on GCP TDX Confidential VM
 #
 # Prerequisites:
 #   - gcloud CLI authenticated
@@ -10,11 +10,11 @@ set -euo pipefail
 #   - Docker image built and pushed to GHCR
 #
 # Usage:
-#   GITHUB_TOKEN=ghp_xxx GITHUB_REPO=maceip/bountynet-genesis ./deploy/gcp-tdx.sh
+#   GITHUB_TOKEN=ghp_xxx GITHUB_REPO=maceip/unified-quote ./deploy/gcp-tdx.sh
 # ===========================================================================
 
 : "${GITHUB_TOKEN:?GITHUB_TOKEN is required}"
-: "${GITHUB_REPO:?GITHUB_REPO is required (e.g., maceip/bountynet-genesis)}"
+: "${GITHUB_REPO:?GITHUB_REPO is required (e.g., maceip/unified-quote)}"
 
 PROJECT="${GCP_PROJECT:-lowkey-b7136}"
 ZONE="${GCP_ZONE:-us-central1-a}"
@@ -24,7 +24,7 @@ IMAGE_TAG="${IMAGE_TAG:-latest}"
 REGISTRY="ghcr.io"
 IMAGE="${REGISTRY}/${GITHUB_REPO}:${IMAGE_TAG}"
 
-echo "=== Deploying bountynet-genesis TDX runner ==="
+echo "=== Deploying unified-quote TDX runner ==="
 echo "  Instance:  ${INSTANCE_NAME}"
 echo "  Zone:      ${ZONE}"
 echo "  Machine:   ${MACHINE_TYPE} (TDX Confidential VM)"
@@ -54,7 +54,7 @@ docker pull "${RUNNER_IMAGE}"
 
 # Run the container with TDX device access
 docker run -d \
-    --name bountynet-runner \
+    --name uq-runner \
     --restart unless-stopped \
     --device /dev/tdx_guest:/dev/tdx_guest \
     -v /sys/kernel/config/tsm:/sys/kernel/config/tsm \
@@ -62,11 +62,11 @@ docker run -d \
     -p 9384:9384 \
     -e GITHUB_TOKEN="${GITHUB_TOKEN}" \
     -e GITHUB_REPO="${GITHUB_REPO}" \
-    -e RUNNER_NAME="bountynet-tdx-$(hostname | cut -c1-8)" \
-    -e RUNNER_LABELS="self-hosted,bountynet,tee,tdx" \
+    -e RUNNER_NAME="unified-quote-tdx-$(hostname | cut -c1-8)" \
+    -e RUNNER_LABELS="self-hosted,unified-quote,tee,tdx" \
     "${RUNNER_IMAGE}"
 
-echo "bountynet-genesis runner started"
+echo "unified-quote runner started"
 STARTUP
 )
 
@@ -92,7 +92,7 @@ gcloud compute instances create "${INSTANCE_NAME}" \
     --metadata=RUNNER_IMAGE="${IMAGE}" \
     --metadata=GHCR_TOKEN="${GITHUB_TOKEN}" \
     --metadata=GHCR_USER="$(echo ${GITHUB_REPO} | cut -d/ -f1)" \
-    --tags=bountynet-runner \
+    --tags=uq-runner \
     --scopes=default
 
 EXTERNAL_IP=$(gcloud compute instances describe "${INSTANCE_NAME}" \
@@ -111,7 +111,7 @@ echo "    curl http://${EXTERNAL_IP}:9384/attest"
 echo "    curl -X POST http://${EXTERNAL_IP}:9384/attest/full | jq ."
 echo ""
 echo "  To check runner status:"
-echo "    gcloud compute ssh ${INSTANCE_NAME} --zone=${ZONE} -- docker logs bountynet-runner"
+echo "    gcloud compute ssh ${INSTANCE_NAME} --zone=${ZONE} -- docker logs uq-runner"
 echo ""
 echo "  To tear down:"
 echo "    gcloud compute instances delete ${INSTANCE_NAME} --zone=${ZONE} --quiet"
