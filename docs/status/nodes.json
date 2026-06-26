@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-06-26T07:35:35Z",
+  "updated_at": "2026-06-26T08:42:11Z",
   "generator": "report-live-quotes.yml",
   "schema": 1,
   "nodes": [
@@ -20,7 +20,7 @@
       "spki_binding": "PASS",
       "quote_signature": "PASS",
       "chain": "PASS (2 stage(s) walked)",
-      "checked_at": "2026-06-26T07:35:34Z",
+      "checked_at": "2026-06-26T08:42:10Z",
       "detail": "quote re-verified against pinned vendor root"
     },
     {
@@ -41,7 +41,7 @@
       "spki_binding": "PASS",
       "quote_signature": "PASS",
       "chain": "leaf only (no previous stage)",
-      "checked_at": "2026-06-26T07:35:35Z",
+      "checked_at": "2026-06-26T08:42:11Z",
       "detail": "quote re-verified against pinned vendor root"
     },
     {
