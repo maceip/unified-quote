@@ -22,6 +22,10 @@ permissions:
 
 jobs:
   attested-build:
+    # Skip on push unless a TDX runner is registered (set repo variable
+    # TDX_RUNNER_ONLINE=true once the GCP TDX CVM is up). Manual dispatch
+    # always runs. This keeps pushes from queuing jobs no runner can serve.
+    if: ${{ vars.TDX_RUNNER_ONLINE == 'true' || github.event_name == 'workflow_dispatch' }}
     runs-on: [self-hosted, tdx, unified-quote]
     steps:
       - name: Checkout
