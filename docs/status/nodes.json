@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-06-26T06:51:00Z",
+  "updated_at": "2026-06-26T06:53:08Z",
   "generator": "report-live-quotes.yml",
   "schema": 1,
   "nodes": [
@@ -10,17 +10,18 @@
       "region": "us-east-2",
       "platform": "SevSnp",
       "endpoint": "https://3.138.156.141/",
-      "verdict": "pass",
+      "verdict": "verified",
       "value_x": "174dbc6ab29abf3d6cf529621e4d1342d3ad55613b5401ad67d78de4337f44034bfca040d62daf8b0f0ba3e4cb7710ea",
       "value_x_short": "174dbc6ab29abf3d",
       "measurements": {
-        "MEASUREMENT": "b756dde72c548e42560ba6b43955b68c1239682104c78fa07989ed3d15478107cb0e0a2a9637604586b9615eb8da7617"
+        "MEASUREMENT": "b756dde72c548e42560ba6b43955b68c1239682104c78fa07989ed3d15478107cb0e0a2a9637604586b9615eb8da7617",
+        "HOST_DATA": "0000000000000000000000000000000000000000000000000000000000000000"
       },
-      "spki_binding": "pass",
-      "quote_signature": "pass",
-      "chain": "report -> VLEK -> ASVK -> ARK-Milan (pinned); stage1 -> stage0, value_x stable (2 stages)",
-      "checked_at": "2026-06-26T06:51:00Z",
-      "detail": "live attested-TLS endpoint; remote `uq check` verifies stage1->stage0 chain to pinned AMD Milan root"
+      "spki_binding": "PASS",
+      "quote_signature": "PASS",
+      "chain": "PASS (2 stage(s) walked)",
+      "checked_at": "2026-06-26T06:53:08Z",
+      "detail": "quote re-verified against pinned vendor root"
     },
     {
       "id": "aws-nitro-use2",
