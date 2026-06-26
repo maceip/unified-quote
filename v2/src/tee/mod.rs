@@ -4,6 +4,8 @@
 //! evidence from the hardware. The shim auto-detects which TEE it's
 //! running in at boot.
 
+#[cfg(feature = "sev-snp")]
+pub mod azure;
 pub mod detect;
 #[cfg(feature = "sev-snp")]
 pub mod kds;

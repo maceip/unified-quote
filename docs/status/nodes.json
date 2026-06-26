@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-06-26T13:48:47Z",
+  "updated_at": "2026-06-26T14:45:02Z",
   "generator": "report-live-quotes.yml",
   "schema": 1,
   "nodes": [
@@ -20,7 +20,7 @@
       "spki_binding": "PASS",
       "quote_signature": "PASS",
       "chain": "PASS (2 stage(s) walked)",
-      "checked_at": "2026-06-26T13:48:47Z",
+      "checked_at": "2026-06-26T14:45:01Z",
       "detail": "quote re-verified against pinned vendor root"
     },
     {
@@ -41,25 +41,27 @@
       "spki_binding": "PASS",
       "quote_signature": "PASS",
       "chain": "leaf only (no previous stage)",
-      "checked_at": "2026-06-26T13:48:47Z",
+      "checked_at": "2026-06-26T14:45:01Z",
       "detail": "quote re-verified against pinned vendor root"
     },
     {
-      "id": "azure-cvm-ne",
-      "label": "Azure Confidential VM (SEV-SNP)",
+      "id": "azure-cvm-we",
+      "label": "Azure Confidential VM (SEV-SNP, vTPM)",
       "cloud": "azure",
-      "region": "northeurope",
+      "region": "westeurope",
       "platform": "SevSnp",
-      "endpoint": null,
-      "verdict": "blocked",
-      "value_x": null,
-      "value_x_short": null,
-      "measurements": {},
-      "spki_binding": null,
-      "quote_signature": null,
-      "chain": null,
-      "checked_at": null,
-      "detail": "azure cvms run under a paravisor (vTOM); the guest does not get raw /dev/sev-guest, so a uq-collected hardware quote is unavailable. attestation on azure goes through MAA (the guest fetches an SNP report via the paravisor's tpm/vTPM and MAA returns a JWT). a native azure collector (paravisor report -> uq eat) is the planned path; see deploy/azure-cvm.sh."
+      "endpoint": "http://51.124.172.253:8443/",
+      "verdict": "verified",
+      "value_x": "0ccb5e62ae295259c952d944b97ca19e1091bb4506c94236f008580df87c33ab",
+      "value_x_short": "0ccb5e62ae295259",
+      "measurements": {
+        "MEASUREMENT": "41f77fe5c1416343f84dbeeded504eb4a2c450861317ed3e4e46cd771c79243a4cbeb3d75ec663e6a7a47bd1f4fab503"
+      },
+      "spki_binding": "report_data = sha256(runtime) \u2192 vTPM AK",
+      "quote_signature": "verified",
+      "chain": "vTPM HCL \u2192 SNP report \u2192 VCEK \u2192 ASK \u2192 ARK-Milan (pinned)",
+      "checked_at": "2026-06-26T14:45:02Z",
+      "detail": "vTPM SNP report re-verified against the AMD root (no MAA)"
     },
     {
       "id": "gcp-tdx-usc1",

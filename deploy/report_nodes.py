@@ -86,6 +86,61 @@ def parse_check_output(text):
     return out
 
 
+def parse_azure_output(text):
+    """Extract fields from `uq azure check` stderr (vTPM SNP → AMD root)."""
+    out = {"measurements": {}, "verdict": None, "sig": None, "chain_ok": None,
+           "runtime_sha256": None}
+    for raw in text.splitlines():
+        line = re.sub(r"^\[uq/azure\]\s*", "", raw.strip())
+        m = re.match(r"verdict:\s*(\w+)", line)
+        if m:
+            out["verdict"] = m.group(1)
+        m = re.match(r"measurement:\s*([0-9a-fA-F]{32,})", line)
+        if m:
+            out["measurements"]["MEASUREMENT"] = m.group(1)
+        m = re.match(r"sig_verified:\s*(\w+)", line)
+        if m:
+            out["sig"] = m.group(1) == "true"
+        m = re.match(r"chain_verified:\s*(\w+)", line)
+        if m:
+            out["chain_ok"] = m.group(1) == "true"
+        m = re.match(r"runtime_sha256:\s*([0-9a-fA-F]{16,})", line)
+        if m:
+            out["runtime_sha256"] = m.group(1)
+    return out
+
+
+def check_azure_node(endpoint):
+    """Re-verify an Azure HCL evidence endpoint. Returns (verdict, detail, entry_fields)."""
+    try:
+        proc = subprocess.run(
+            [UQ_BIN, "azure", "check", endpoint],
+            capture_output=True, text=True, timeout=CHECK_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return "offline", f"no response within {CHECK_TIMEOUT}s", {}
+    except FileNotFoundError:
+        return "failed", f"verifier not found: {UQ_BIN}", {}
+
+    combined = (proc.stderr or "") + "\n" + (proc.stdout or "")
+    p = parse_azure_output(combined)
+    fields = {
+        "measurements": p["measurements"],
+        "chain": "vTPM HCL → SNP report → VCEK → ASK → ARK-Milan (pinned)",
+        "quote_signature": "verified" if p.get("sig") else "FAIL",
+        "spki_binding": "report_data = sha256(runtime) → vTPM AK",
+        "value_x": p.get("runtime_sha256"),
+        "value_x_short": (p.get("runtime_sha256") or "")[:16] or None,
+    }
+    if proc.returncode == 0 and p.get("verdict") == "verified":
+        return "verified", "vTPM SNP report re-verified against the AMD root (no MAA)", fields
+    lowered = combined.lower()
+    if any(s in lowered for s in ("connect", "refused", "timed out", "dns", "unreachable")):
+        return "offline", "endpoint unreachable", fields
+    err = [l.strip() for l in combined.splitlines() if l.strip()]
+    return "failed", (err[-1][:200] if err else f"exit {proc.returncode}"), fields
+
+
 def check_node(endpoint):
     """Run the verifier. Returns (verdict, detail, parsed)."""
     try:
@@ -142,7 +197,18 @@ def main():
         }
 
         endpoint = node.get("endpoint")
-        if endpoint:
+        azure_endpoint = node.get("azure_endpoint")
+        if azure_endpoint:
+            # Azure CVM: evidence is a raw vTPM HCL blob, re-verified to the
+            # AMD root with `uq azure check` (not attested-TLS `uq check`).
+            verdict, detail, fields = check_azure_node(azure_endpoint)
+            entry["verdict"] = verdict
+            entry["detail"] = detail
+            entry["checked_at"] = now_iso()
+            entry["endpoint"] = azure_endpoint
+            entry.update(fields)
+            print(f"[report] {node['id']}: {verdict} ({detail})")
+        elif endpoint:
             verdict, detail, parsed = check_node(endpoint)
             entry["verdict"] = verdict
             entry["detail"] = detail

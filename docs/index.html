@@ -152,6 +152,16 @@ signature chain <span class="ok">PASS</span>  <span class="c"># report → vlek 
 measurement b756dde7&#8230;b8da7617</pre>
   </div>
 
+  <div class="card reveal" style="--d:.29s">
+    <div class="hd">$ live attestation &middot; azure confidential vm (sev-snp, vTPM)</div>
+    <pre><span class="c"># azure runs sev-snp under the vTOM paravisor — no /dev/sev-guest.</span>
+<span class="c"># the snp report comes from the vTPM; we verify it to the amd root, not MAA.</span>
+<span class="p">$</span> uq azure check http://51.124.172.253:8443/
+verdict <span class="ok">verified</span> · sig <span class="ok">PASS</span> · chain <span class="ok">PASS</span> <span class="c"># vcek → ask → ark-milan (pinned)</span>
+report_data == sha256(runtime) <span class="ok">PASS</span>  <span class="c"># endorses the vTPM AK (HCLAkPub)</span>
+measurement 41f77fe5&#8230;f4fab503</pre>
+  </div>
+
   <h2 class="reveal" style="--d:.3s">the stack</h2>
   <div class="card reveal" style="--d:.32s">
     <ul class="stack">

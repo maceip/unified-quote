@@ -117,14 +117,17 @@ pub fn fetch_cert_chain_kind(product: &str, kind: &str) -> Result<(Vec<u8>, Vec<
 ///
 /// Returns (product_name, chip_id, bl_spl, tee_spl, snp_spl, ucode_spl)
 pub fn extract_kds_params(report: &[u8]) -> Result<(String, Vec<u8>, u8, u8, u8, u8), String> {
-    if report.len() < 0x188 {
+    if report.len() < 0x1E0 {
         return Err(format!("Report too short: {} bytes", report.len()));
     }
 
     let product = snp_product(report)?;
 
-    // CHIP_ID at offset 0x140 (64 bytes)
-    let chip_id = report[0x140..0x180].to_vec();
+    // CHIP_ID at offset 0x1A0 (64 bytes), per the AMD SEV-SNP ABI
+    // (ATTESTATION_REPORT). 0x140 is REPORT_ID — using it produced the wrong
+    // KDS path and a 404. This only affects the per-chip VCEK lookup (Azure /
+    // bare-metal SNP); the VLEK path used by AWS does not consult chip_id.
+    let chip_id = report[0x1A0..0x1E0].to_vec();
 
     // REPORTED_TCB at offset 0x180 (8 bytes)
     // Layout: boot_loader(1), tee(1), reserved(4), snp(1), microcode(1)

@@ -72,6 +72,8 @@ fn main() -> anyhow::Result<()> {
             }
         }
         "merge" => cmd_merge(&args[2..]),
+        #[cfg(feature = "sev-snp")]
+        "azure" => cmd_azure(&args[2..]),
         _ => {
             print_usage();
             std::process::exit(1);
@@ -91,6 +93,7 @@ fn print_usage() {
     eprintln!("  {bin} enclave <source-dir> [--cmd \"...\"]  (Nitro: build+serve in one)");
     eprintln!("  {bin} proxy   --cid <enclave-cid> [--acme]  (parent: TCP:443 → vsock + ACME)");
     eprintln!("  {bin} merge   <att1.json> <att2.json> [...] --output merged.json");
+    eprintln!("  {bin} azure   collect|verify|check|serve   (Azure CVM: vTPM SNP → AMD root)");
 }
 
 fn cli_name() -> String {
@@ -2247,4 +2250,159 @@ fn verify_quote_binding(quote: &[u8], binding: &[u8], platform: &str) -> bool {
         }
         _ => false,
     }
+}
+
+/// `uq azure <collect|verify|check|serve>` — Azure confidential VM attestation.
+///
+/// Azure CVMs run AMD SEV-SNP under the vTOM paravisor and do not expose
+/// `/dev/sev-guest`. The paravisor publishes a genuine SNP report through the
+/// vTPM (NV index 0x01400001); we extract and verify it against the **AMD root**
+/// (per-chip VCEK → ASK → ARK Milan), giving Azure hardware-rooted attestation
+/// without trusting Microsoft Azure Attestation.
+#[cfg(feature = "sev-snp")]
+fn cmd_azure(args: &[String]) -> anyhow::Result<()> {
+    use unified_quote::tee::azure;
+
+    let sub = args.first().map(String::as_str).unwrap_or("");
+    let rest = if args.is_empty() { &[][..] } else { &args[1..] };
+
+    // Small flag helper: value following `flag`, else default.
+    let flag = |name: &str, default: &str| -> String {
+        rest.iter()
+            .position(|a| a == name)
+            .and_then(|i| rest.get(i + 1))
+            .cloned()
+            .unwrap_or_else(|| default.to_string())
+    };
+    let positional = || rest.iter().find(|a| !a.starts_with("--")).cloned();
+
+    match sub {
+        "collect" => {
+            let out = flag("-o", "azure-hcl.bin");
+            eprintln!("[uq/azure] Reading HCL report from vTPM NV {}", azure::AZURE_HCL_NV_INDEX);
+            let hcl = azure::read_hcl_report().map_err(|e| anyhow::anyhow!(e))?;
+            std::fs::write(&out, &hcl)?;
+            eprintln!("[uq/azure] Wrote {} ({} bytes)", out, hcl.len());
+            let verdict = azure::verify_hcl(&hcl).map_err(|e| anyhow::anyhow!(e))?;
+            print_azure_verdict(&verdict);
+            std::fs::write(
+                "azure-attest.json",
+                serde_json::to_string_pretty(&verdict)?,
+            )?;
+            eprintln!("[uq/azure] Wrote azure-attest.json");
+            if verdict.verdict != "verified" {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        "verify" => {
+            let path = positional()
+                .ok_or_else(|| anyhow::anyhow!("usage: uq azure verify <azure-hcl.bin>"))?;
+            let hcl = std::fs::read(&path)?;
+            let verdict = azure::verify_hcl(&hcl).map_err(|e| anyhow::anyhow!(e))?;
+            print_azure_verdict(&verdict);
+            if verdict.verdict != "verified" {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        "check" => {
+            let url = positional()
+                .ok_or_else(|| anyhow::anyhow!("usage: uq azure check http://<host>[:port]/"))?;
+            let base = url.trim_end_matches('/');
+            let target = format!("{base}/azure-hcl.bin");
+            eprintln!("[uq/azure] Fetching evidence: {target}");
+            let resp = reqwest::blocking::Client::builder()
+                .danger_accept_invalid_certs(true)
+                .timeout(std::time::Duration::from_secs(15))
+                .build()?
+                .get(&target)
+                .send()?;
+            if !resp.status().is_success() {
+                anyhow::bail!("endpoint returned HTTP {}", resp.status());
+            }
+            let hcl = resp.bytes()?.to_vec();
+            eprintln!("[uq/azure] Got {} bytes; verifying against AMD root…", hcl.len());
+            let verdict = azure::verify_hcl(&hcl).map_err(|e| anyhow::anyhow!(e))?;
+            print_azure_verdict(&verdict);
+            if verdict.verdict != "verified" {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        "serve" => {
+            let path = flag("-f", "azure-hcl.bin");
+            let port: u16 = flag("--port", "8443").parse().unwrap_or(8443);
+            let hcl = std::fs::read(&path)?;
+            // Pre-verify so we only serve self-authenticating, valid evidence.
+            let verdict = azure::verify_hcl(&hcl).map_err(|e| anyhow::anyhow!(e))?;
+            let verdict_json = serde_json::to_string_pretty(&verdict)?;
+            serve_azure_evidence(port, hcl, verdict_json)
+        }
+        _ => {
+            eprintln!("Usage:");
+            eprintln!("  uq azure collect [-o azure-hcl.bin]   (on the Azure CVM)");
+            eprintln!("  uq azure verify  <azure-hcl.bin>");
+            eprintln!("  uq azure check   http://<host>[:port]/");
+            eprintln!("  uq azure serve   [-f azure-hcl.bin] [--port 8443]");
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(feature = "sev-snp")]
+fn print_azure_verdict(v: &unified_quote::tee::azure::AzureVerdict) {
+    eprintln!("[uq/azure] === Azure SEV-SNP (vTPM → AMD root) ===");
+    eprintln!("[uq/azure] verdict:        {}", v.verdict);
+    eprintln!("[uq/azure] measurement:    {}", v.measurement);
+    eprintln!("[uq/azure] sig_verified:   {}", v.sig_verified);
+    eprintln!("[uq/azure] chain_verified: {}", v.chain_verified);
+    eprintln!("[uq/azure] runtime_sha256: {}", v.runtime_sha256);
+    if let Some(k) = &v.ak_kid {
+        eprintln!("[uq/azure] vtpm_ak:        {k} (endorsed by report_data)");
+    }
+    if let Some(id) = &v.vm_unique_id {
+        eprintln!("[uq/azure] vm_unique_id:   {id}");
+    }
+}
+
+/// Minimal blocking HTTP/1.1 server exposing the self-authenticating evidence:
+///   GET /azure-hcl.bin -> raw HCL report (verifiable to the AMD root anywhere)
+///   GET /              -> JSON verdict
+#[cfg(feature = "sev-snp")]
+fn serve_azure_evidence(port: u16, hcl: Vec<u8>, verdict_json: String) -> anyhow::Result<()> {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind(("0.0.0.0", port))?;
+    eprintln!("[uq/azure] Serving evidence on 0.0.0.0:{port}");
+    eprintln!("[uq/azure]   GET /azure-hcl.bin   (raw SNP report, AMD-verifiable)");
+    eprintln!("[uq/azure]   GET /                (JSON verdict)");
+    for stream in listener.incoming() {
+        let mut stream = match stream {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let mut buf = [0u8; 1024];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let req = String::from_utf8_lossy(&buf[..n]);
+        let path = req
+            .lines()
+            .next()
+            .and_then(|l| l.split_whitespace().nth(1))
+            .unwrap_or("/");
+        let (status, ctype, body): (&str, &str, Vec<u8>) = if path.starts_with("/azure-hcl.bin") {
+            ("200 OK", "application/octet-stream", hcl.clone())
+        } else if path == "/" {
+            ("200 OK", "application/json", verdict_json.clone().into_bytes())
+        } else {
+            ("404 Not Found", "text/plain", b"not found".to_vec())
+        };
+        let header = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let _ = stream.write_all(header.as_bytes());
+        let _ = stream.write_all(&body);
+        let _ = stream.flush();
+    }
+    Ok(())
 }

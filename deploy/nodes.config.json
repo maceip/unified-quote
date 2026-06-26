@@ -34,13 +34,19 @@
       "endpoint": "https://3.17.186.5/"
     },
     {
-      "id": "azure-cvm-ne",
-      "label": "Azure Confidential VM (SEV-SNP)",
+      "id": "azure-cvm-we",
+      "label": "Azure Confidential VM (SEV-SNP, vTPM)",
       "cloud": "azure",
-      "region": "northeurope",
+      "region": "westeurope",
       "platform": "SevSnp",
-      "status": "blocked",
-      "detail": "azure cvms run under a paravisor (vTOM); the guest does not get raw /dev/sev-guest, so a uq-collected hardware quote is unavailable. attestation on azure goes through MAA (the guest fetches an SNP report via the paravisor's tpm/vTPM and MAA returns a JWT). a native azure collector (paravisor report -> uq eat) is the planned path; see deploy/azure-cvm.sh.",
+      "instance": "uqaz1 (Standard_DC2as_v5)",
+      "cpu": "AMD EPYC (Milan)",
+      "signing_key": "VCEK (per-chip)",
+      "measurement": "41f77fe5c1416343f84dbeeded504eb4a2c450861317ed3e4e46cd771c79243a4cbeb3d75ec663e6a7a47bd1f4fab503",
+      "chain": "vTPM HCL -> SNP report -> VCEK -> ASK -> ARK-Milan (pinned)",
+      "verified_utc": "2026-06-26",
+      "detail": "azure cvms run amd sev-snp under the vTOM paravisor and do not expose /dev/sev-guest. the paravisor publishes a genuine snp report through the vTPM (NV index 0x01400001); `uq azure` extracts it and verifies it against the AMD root (per-chip VCEK -> ASK -> ARK-Milan). report_data == sha256(runtime-data) endorses the vTPM AK. trust chains to amd silicon, not to MAA.",
+      "azure_endpoint": "http://51.124.172.253:8443/",
       "endpoint": null
     },
     {
