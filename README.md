@@ -100,6 +100,39 @@ value. same linked pattern as nitro+nitrotpm.
 | amd sev-snp | /dev/sev-guest · configfs-tsm | ecdsa-p384 vcek/vlek → amd ark (milan/genoa) |
 | aws nitro | /dev/nsm (nsm api) | ecdsa-p384 → aws nitro root ca |
 
+## aws: nitro vs sev-snp, and how we link them
+
+a fair question about the aws node: **a nitro attestation roots to aws, not to
+silicon.** the nitro security module signs the enclave document with the same
+pki as nitro enclaves, so it attests *the guest image* (pcr0…) but the trust
+ultimately terminates at the **aws nitro root ca** — aws vouches for it.
+tdx/sev-snp are different: the **cpu vendor** (intel/amd) signs the report, so
+the verdict roots in silicon and you don't have to trust the cloud operator.
+
+there is a symmetric gap on the snp side: on an snp instance the hardware
+`MEASUREMENT` only covers the **ovmf firmware** launched by the cpu — it does
+**not** cover the kernel, initrd, or cmdline. those guest layers are measured by
+**nitrotpm** into pcr 0–7.
+
+so each root sees half the picture: amd signs the platform/firmware launch but
+not the kernel; nitro signs the kernel pcrs but roots in aws, not silicon. we
+close both gaps by **linking the two roots through one field**:
+
+1. collect the **nitrotpm** attestation document (`COSE_Sign1`, nitro-signed)
+   covering the kernel pcrs;
+2. bind `sha256(nitrotpm_doc)` into the snp **`REPORT_DATA[0..32]`** (the lower
+   32 bytes; `value_x` rides the upper 32);
+3. amd signs that `REPORT_DATA`. so the **amd root** now cryptographically
+   vouches that *a genuine snp tee collected exactly this nitrotpm document* —
+   and the nitro root vouches the kernel pcrs inside it.
+
+the result is a single receipt with **two independent hardware roots of trust,
+cryptographically chained** (`v2/src/tee/tpm.rs`): amd silicon for the platform,
+aws nitro for the kernel image, joined at `REPORT_DATA`. neither root alone is
+sufficient; together they cover firmware → kernel → workload with no trust in
+the host operator. it is the same linking pattern the azure node uses for
+`value_x` (snp-endorsed vTPM ak signs a quote over the source identity).
+
 ## the stack
 
 - agent platform — [cvm-agent](https://github.com/maceip/cvm-agent)

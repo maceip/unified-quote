@@ -162,6 +162,18 @@ verdict <span class="ok">verified</span> · sig <span class="ok">PASS</span> · 
 measurement 41f77fe5&#8230;f4fab503 · value_x dde6f4c1&#8230;</pre>
   </div>
 
+  <h2 class="reveal" style="--d:.295s">aws: nitro vs sev-snp, linked</h2>
+  <div class="card reveal" style="--d:.297s">
+    <p class="summary" style="margin:0 0 .6rem">a nitro attestation roots to <b>aws</b>, not silicon — it covers the guest image but the trust terminates at the aws nitro root ca. sev-snp/tdx root in the <b>cpu vendor</b>. and on snp the hardware <code>MEASUREMENT</code> only covers ovmf firmware — the kernel/initrd live in nitrotpm pcrs. we link both roots through one field:</p>
+    <pre><span class="c"># two independent hardware roots, cryptographically chained</span>
+nitrotpm doc  <span class="c"># COSE_Sign1 (nitro-signed) → kernel PCR 0-7</span>
+   │ sha256(doc)
+   ▼
+REPORT_DATA[0..32] <span class="ok">bound</span>   <span class="c"># amd-signed → vouches a genuine SNP TEE collected it</span>
+REPORT_DATA[32..64] = value_x      <span class="c"># source identity</span>
+<span class="ok"># result:</span> amd silicon (firmware) + aws nitro (kernel) → one receipt, no host trust</pre>
+  </div>
+
   <h2 class="reveal" style="--d:.3s">the stack</h2>
   <div class="card reveal" style="--d:.32s">
     <ul class="stack">
