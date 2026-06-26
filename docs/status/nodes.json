@@ -29,16 +29,18 @@
       "cloud": "aws",
       "region": "us-east-2",
       "platform": "Nitro",
-      "endpoint": null,
-      "verdict": "pending",
-      "value_x": null,
-      "value_x_short": null,
-      "measurements": {},
-      "spki_binding": null,
-      "quote_signature": null,
-      "chain": null,
-      "checked_at": null,
-      "detail": "registered, awaiting first live report"
+      "endpoint": "https://3.17.186.5/",
+      "verdict": "pass",
+      "value_x": "5d108f53301a3f6e364ae80c060cbcb134c1a195a223d6f9f027c0b4dc5005287d5d2dd298f74304b5148048e626d599",
+      "value_x_short": "5d108f53301a3f6e",
+      "measurements": {
+        "PCR0": "1289f1bdde608e067b1e7975c5a86eae649d78af130144f2ddced9d2973992e0cede7227e8f0e9e7e2a0de9aac2a0bdd"
+      },
+      "spki_binding": "pass",
+      "quote_signature": "pass",
+      "chain": "nitro attestation doc (COSE_Sign1) -> aws nitro root (pinned); PCR0 == build-enclave PCR0",
+      "checked_at": "2026-06-26T07:07:00Z",
+      "detail": "live nitro enclave; remote `uq check` verifies the attestation doc to the pinned AWS Nitro root, PCR0 matches the EIF we built"
     },
     {
       "id": "azure-cvm-ne",

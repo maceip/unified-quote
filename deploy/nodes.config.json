@@ -24,7 +24,14 @@
       "cloud": "aws",
       "region": "us-east-2",
       "platform": "Nitro",
-      "endpoint": null
+      "instance": "i-0ac8a5a4a03780800",
+      "instance_type": "m5.xlarge",
+      "measurement": "1289f1bdde608e067b1e7975c5a86eae649d78af130144f2ddced9d2973992e0cede7227e8f0e9e7e2a0de9aac2a0bdd",
+      "chain": "nitro attestation doc (COSE_Sign1) -> aws nitro root (pinned)",
+      "verified_utc": "2026-06-26",
+      "value_x": "5d108f53301a3f6e364ae80c060cbcb134c1a195a223d6f9f027c0b4dc5005287d5d2dd298f74304b5148048e626d599",
+      "note": "PCR0 from `uq check` matches `nitro-cli build-enclave` PCR0 exactly",
+      "endpoint": "https://3.17.186.5/"
     },
     {
       "id": "azure-cvm-ne",

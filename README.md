@@ -51,6 +51,16 @@ cargo build --release --bin uq
 # → "3.138.156.141 is a genuine SevSnp TEE running Value X 174dbc6ab29abf3d"
 ```
 
+a second live node proves the same verifier on **aws nitro** (enclave on
+`m5.xlarge`, us-east-2). the pcr0 reported by `uq check` matches the pcr0 from
+`nitro-cli build-enclave` exactly — the enclave runs precisely the image we built:
+
+```bash
+./target/release/uq check https://3.17.186.5/
+# → spki binding PASS · quote signature PASS (→ pinned aws nitro root)
+# → pcr0 1289f1bd… · "3.17.186.5 is a genuine Nitro TEE"
+```
+
 ## platform support
 
 | platform | evidence | signature → pinned root |
