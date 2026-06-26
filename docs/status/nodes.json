@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-06-26T07:09:08Z",
+  "updated_at": "2026-06-26T07:11:22Z",
   "generator": "report-live-quotes.yml",
   "schema": 1,
   "nodes": [
@@ -20,7 +20,7 @@
       "spki_binding": "PASS",
       "quote_signature": "PASS",
       "chain": "PASS (2 stage(s) walked)",
-      "checked_at": "2026-06-26T07:09:08Z",
+      "checked_at": "2026-06-26T07:11:22Z",
       "detail": "quote re-verified against pinned vendor root"
     },
     {
@@ -41,17 +41,17 @@
       "spki_binding": "PASS",
       "quote_signature": "PASS",
       "chain": "leaf only (no previous stage)",
-      "checked_at": "2026-06-26T07:09:08Z",
+      "checked_at": "2026-06-26T07:11:22Z",
       "detail": "quote re-verified against pinned vendor root"
     },
     {
       "id": "azure-cvm-ne",
-      "label": "Azure Confidential VM",
+      "label": "Azure Confidential VM (SEV-SNP)",
       "cloud": "azure",
       "region": "northeurope",
       "platform": "SevSnp",
       "endpoint": null,
-      "verdict": "pending",
+      "verdict": "blocked",
       "value_x": null,
       "value_x_short": null,
       "measurements": {},
@@ -59,7 +59,24 @@
       "quote_signature": null,
       "chain": null,
       "checked_at": null,
-      "detail": "registered, awaiting first live report"
+      "detail": "azure cvms run under a paravisor (vTOM); the guest does not get raw /dev/sev-guest, so a uq-collected hardware quote is unavailable. attestation on azure goes through MAA (the guest fetches an SNP report via the paravisor's tpm/vTPM and MAA returns a JWT). a native azure collector (paravisor report -> uq eat) is the planned path; see deploy/azure-cvm.sh."
+    },
+    {
+      "id": "gcp-tdx-usc1",
+      "label": "GCP Confidential VM (Intel TDX)",
+      "cloud": "gcp",
+      "region": "us-central1",
+      "platform": "Tdx",
+      "endpoint": null,
+      "verdict": "planned",
+      "value_x": null,
+      "value_x_short": null,
+      "measurements": {},
+      "spki_binding": null,
+      "quote_signature": null,
+      "chain": null,
+      "checked_at": null,
+      "detail": "gcp c3 confidential vms expose intel tdx via configfs-tsm, which the uq tdx collector already supports. provisioning is gated on gcloud auth + a gcp project not present in this environment; deploy/gcp-tdx.sh is ready to run."
     }
   ]
 }
