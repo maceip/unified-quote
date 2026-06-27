@@ -18,15 +18,15 @@
 //! - `spki_hash_of_cert(peer_cert)` equals the producer-side
 //!   `spki_hash_of(keypair)`, end-to-end across a real network socket.
 
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::sync::Arc;
+use std::thread;
 use unified_quote::eat::{BuildComponents, EatToken};
 use unified_quote::net::attested_tls::{
     extract_eat_from_cert, generate_keypair, make_attested_cert, spki_hash_of, spki_hash_of_cert,
 };
 use unified_quote::quote::Platform;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::sync::Arc;
-use std::thread;
 
 fn fake_snp_quote_with_binding(binding: &[u8; 32]) -> Vec<u8> {
     let mut q = vec![0u8; 1152];

@@ -139,9 +139,7 @@ fn cmd_proxy(args: &[String]) -> anyhow::Result<()> {
     let cid = cid.ok_or_else(|| anyhow::anyhow!("--cid <enclave-cid> required"))?;
 
     eprintln!("[uq] Proxy: TCP:{port} → enclave CID {cid}");
-    eprintln!(
-        "[uq] TLS terminates inside the enclave. This proxy only sees encrypted bytes."
-    );
+    eprintln!("[uq] TLS terminates inside the enclave. This proxy only sees encrypted bytes.");
 
     if acme {
         let proxy_port = port;
@@ -418,9 +416,10 @@ fn cmd_build(args: &[String]) -> anyhow::Result<()> {
     let binding: [u8; 32] = eat.binding_bytes();
     eprintln!("[uq] EAT binding: {}", hex::encode(binding));
 
-    let mut report_data = [0u8; 64];
-    report_data[..32].copy_from_slice(&binding);
-    report_data[32..64].copy_from_slice(&value_x[..32]);
+    // report_data[0..32] = binding; [32..64] = second commitment. With no
+    // issuer challenge this is value_x[..32] — byte-identical to what we wrote
+    // before, but now defined + verifiable via EatToken::report_data_64 (L1.2).
+    let report_data = eat.report_data_64(None);
 
     // NitroTPM side evidence: on AWS SNP, collect NitroTPM attestation for
     // kernel measurement. This is recorded next to the EAT but is not yet
@@ -623,9 +622,7 @@ fn cmd_build(args: &[String]) -> anyhow::Result<()> {
     if log_committed {
         eprintln!("[uq] Transparency log: attestation committed to git");
     } else {
-        eprintln!(
-            "[uq] Transparency log: no git repo found (attestation written to disk only)"
-        );
+        eprintln!("[uq] Transparency log: no git repo found (attestation written to disk only)");
     }
 
     eprintln!();
@@ -752,14 +749,8 @@ fn cmd_check(args: &[String]) -> anyhow::Result<()> {
     let actual_spki_hash = net::attested_tls::spki_hash_of_cert(&leaf_der)?;
     if actual_spki_hash != eat.tls_spki_hash {
         eprintln!("[uq] SPKI binding:    FAIL");
-        eprintln!(
-            "[uq]   eat claim:     {}",
-            hex::encode(eat.tls_spki_hash)
-        );
-        eprintln!(
-            "[uq]   cert actual:   {}",
-            hex::encode(actual_spki_hash)
-        );
+        eprintln!("[uq]   eat claim:     {}", hex::encode(eat.tls_spki_hash));
+        eprintln!("[uq]   cert actual:   {}", hex::encode(actual_spki_hash));
         anyhow::bail!("attested-TLS channel binding failed");
     }
     eprintln!("[uq] SPKI binding:    PASS");
@@ -1030,8 +1021,7 @@ fn cmd_verify(args: &[String]) -> anyhow::Result<()> {
         i += 1;
     }
 
-    let path =
-        att_path.ok_or_else(|| anyhow::anyhow!("Usage: uq verify <attestation.json>"))?;
+    let path = att_path.ok_or_else(|| anyhow::anyhow!("Usage: uq verify <attestation.json>"))?;
     let att_json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
 
     // The JSON view is a lossy projection of the EAT (no eat_nonce, eat_profile,
@@ -1147,9 +1137,7 @@ fn verify_attestation_json(
         }
     } else {
         eprintln!("[uq] Platform measurement: NOT PRESENT in attestation");
-        eprintln!(
-            "[uq] WARNING: cannot verify builder identity without platform measurement"
-        );
+        eprintln!("[uq] WARNING: cannot verify builder identity without platform measurement");
     }
 
     // Check 4: Verify TEE quote signature chain.
@@ -1210,10 +1198,7 @@ fn verify_attestation_json(
 
     // Check 5: Optionally verify CT against source
     if let Some(dir) = source_dir {
-        eprintln!(
-            "[uq] Verifying source hash against {}",
-            dir.display()
-        );
+        eprintln!("[uq] Verifying source hash against {}", dir.display());
         let local_ct = compute_tree_hash(dir)?;
         if hex::encode(local_ct) == ct_hex {
             eprintln!("[uq] Source hash: PASS — matches attestation");
@@ -1227,10 +1212,7 @@ fn verify_attestation_json(
 
     // Check 6: Optionally verify A against artifact
     if let Some(path) = artifact_path {
-        eprintln!(
-            "[uq] Verifying artifact hash against {}",
-            path.display()
-        );
+        eprintln!("[uq] Verifying artifact hash against {}", path.display());
         let bytes = std::fs::read(path)?;
         let local_a = hex::encode(Sha384::digest(&bytes));
         if local_a == a_hex {
@@ -1254,6 +1236,15 @@ fn verify_attestation_json(
                 reg.len(),
                 registry::describe(&lookup)
             );
+            eprintln!(
+                "[uq] Registry snapshot: {}",
+                registry::describe_snapshot(reg.snapshot_state())
+            );
+            // A fresh, signed snapshot is authoritative for revocation: it
+            // cannot be pinned to a stale pre-revocation mirror.
+            if let Some(registry::Status::Revoked) = reg.fresh_status(x_hex) {
+                eprintln!("[uq] WARNING: value_x is REVOKED per the fresh signed snapshot");
+            }
         }
         Ok(_) => {
             eprintln!("[uq] Registry: empty (no entries loaded)");
@@ -1349,10 +1340,7 @@ async fn cmd_run(args: &[String]) -> anyhow::Result<()> {
     );
     let stage0_eat = eat::EatToken::from_cbor(&stage0_cbor)
         .map_err(|e| anyhow::anyhow!("decode stage 0 EAT: {e}"))?;
-    eprintln!(
-        "[uq] Stage 0 Value X: {}",
-        hex::encode(stage0_eat.value_x)
-    );
+    eprintln!("[uq] Stage 0 Value X: {}", hex::encode(stage0_eat.value_x));
 
     // --- Step 3: verify stage 0's quote ---
     // The producer cannot be trusted; we verify stage 0 at boot.
@@ -1413,9 +1401,9 @@ async fn cmd_run(args: &[String]) -> anyhow::Result<()> {
 
     let binding = stage1.binding_bytes();
 
-    let mut report_data = [0u8; 64];
-    report_data[..32].copy_from_slice(&binding);
-    report_data[32..64].copy_from_slice(&current_x[..32]);
+    // [0..32] = binding, [32..64] = second commitment (current_x[..32]) — see
+    // EatToken::report_data_64 (L1.2). Byte-identical to the previous layout.
+    let report_data = stage1.report_data_64(None);
 
     // --- Step 7: collect stage 1 quote ---
     eprintln!("[uq] Collecting stage 1 quote...");
@@ -1602,10 +1590,7 @@ fn cmd_enclave(args: &[String]) -> anyhow::Result<()> {
     eprintln!("[uq] Generating attested-TLS keypair inside enclave");
     let tls_kp = net::attested_tls::generate_keypair()?;
     let tls_spki_hash = net::attested_tls::spki_hash_of(&tls_kp);
-    eprintln!(
-        "[uq] TLS SPKI sha256: {}",
-        hex::encode(tls_spki_hash)
-    );
+    eprintln!("[uq] TLS SPKI sha256: {}", hex::encode(tls_spki_hash));
 
     // Provisional EAT: same fields as the final one EXCEPT
     // platform_quote is empty. binding_bytes() is defined to exclude
@@ -1857,10 +1842,7 @@ fn cmd_run_sync(args: &[String]) -> anyhow::Result<()> {
     // Serve via vsock (blocking)
     let domain = net::acme::domain_from_value_x(&current_x);
     eprintln!("[uq] Domain: {domain}");
-    eprintln!(
-        "[uq] Serving via vsock on port {}",
-        net::vsock::VSOCK_PORT
-    );
+    eprintln!("[uq] Serving via vsock on port {}", net::vsock::VSOCK_PORT);
 
     net::vsock::serve_vsock(&attestation_json)?;
 
@@ -2298,7 +2280,10 @@ fn cmd_azure(args: &[String]) -> anyhow::Result<()> {
         "collect" => {
             let out = flag("-o", "azure-bundle.json");
             let binding = parse_binding()?;
-            eprintln!("[uq/azure] Reading HCL report from vTPM NV {}", azure::AZURE_HCL_NV_INDEX);
+            eprintln!(
+                "[uq/azure] Reading HCL report from vTPM NV {}",
+                azure::AZURE_HCL_NV_INDEX
+            );
             if let Some(b) = &binding {
                 eprintln!(
                     "[uq/azure] Binding value_x {} via AK quote (vTPM {})",
@@ -2400,9 +2385,14 @@ fn cmd_azure(args: &[String]) -> anyhow::Result<()> {
             let domain = flag("--domain", "attest.secure.build");
             let port: u16 = flag("--port", "8443").parse().unwrap_or(8443);
             let vx = parse_binding()?.ok_or_else(|| {
-                anyhow::anyhow!("serve-tls requires --value-x <hex32> (the source identity to bind)")
+                anyhow::anyhow!(
+                    "serve-tls requires --value-x <hex32> (the source identity to bind)"
+                )
             })?;
-            eprintln!("[uq/azure] Minting attested-TLS cert for {domain} (value_x {})", hex::encode(vx));
+            eprintln!(
+                "[uq/azure] Minting attested-TLS cert for {domain} (value_x {})",
+                hex::encode(vx)
+            );
             let (cert, _bundle) =
                 azure::collect_attested_cert(&domain, &vx).map_err(|e| anyhow::anyhow!(e))?;
             // Self-check before serving: only expose evidence that verifies.
@@ -2463,10 +2453,12 @@ fn cmd_azure(args: &[String]) -> anyhow::Result<()> {
                 .first()
                 .ok_or_else(|| anyhow::anyhow!("empty peer cert chain"))?;
             let leaf_der = leaf.as_ref().to_vec();
-            eprintln!("[uq/azure] Leaf cert: {} bytes DER; verifying embedded evidence…", leaf_der.len());
+            eprintln!(
+                "[uq/azure] Leaf cert: {} bytes DER; verifying embedded evidence…",
+                leaf_der.len()
+            );
 
-            let verdict =
-                azure::verify_attested_cert(&leaf_der).map_err(|e| anyhow::anyhow!(e))?;
+            let verdict = azure::verify_attested_cert(&leaf_der).map_err(|e| anyhow::anyhow!(e))?;
             eprintln!("[uq/azure] channel binding: PASS (cert SPKI bound into AK quote)");
             print_azure_verdict(&verdict);
             if verdict.verdict != "verified" {
@@ -2542,9 +2534,17 @@ fn serve_azure_evidence(
         let (status, ctype, body): (&str, &str, Vec<u8>) = if path.starts_with("/azure-hcl.bin") {
             ("200 OK", "application/octet-stream", hcl.clone())
         } else if path.starts_with("/bundle.json") {
-            ("200 OK", "application/json", bundle_json.clone().into_bytes())
+            (
+                "200 OK",
+                "application/json",
+                bundle_json.clone().into_bytes(),
+            )
         } else if path == "/" {
-            ("200 OK", "application/json", verdict_json.clone().into_bytes())
+            (
+                "200 OK",
+                "application/json",
+                verdict_json.clone().into_bytes(),
+            )
         } else {
             ("404 Not Found", "text/plain", b"not found".to_vec())
         };

@@ -89,7 +89,9 @@ pub fn bridge_vsock_to_loopback(loopback_port: u16) -> Result<()> {
 /// and forwards them to the enclave's vsock.
 pub fn bridge_tcp_to_vsock(listen_port: u16, enclave_cid: u32) -> Result<()> {
     let listener = std::net::TcpListener::bind(format!("0.0.0.0:{listen_port}"))?;
-    eprintln!("[uq/vsock] Proxy listening: TCP:{listen_port} → vsock CID {enclave_cid}:{VSOCK_PORT}");
+    eprintln!(
+        "[uq/vsock] Proxy listening: TCP:{listen_port} → vsock CID {enclave_cid}:{VSOCK_PORT}"
+    );
 
     for stream in listener.incoming() {
         let stream = match stream {
@@ -403,9 +405,7 @@ fn swap_tls_config(
             if acme_alpn {
                 // Accept both acme-tls/1 (for LE validation) and h2/http1.1 (for our own POST /tls-cert)
                 new_config.alpn_protocols = vec![b"acme-tls/1".to_vec(), b"http/1.1".to_vec()];
-                eprintln!(
-                    "[uq/vsock] ACME challenge cert installed (alpn: acme-tls/1 + http/1.1)"
-                );
+                eprintln!("[uq/vsock] ACME challenge cert installed (alpn: acme-tls/1 + http/1.1)");
             } else {
                 eprintln!("[uq/vsock] TLS cert hot-swapped");
             }
@@ -455,10 +455,7 @@ fn handle_kms_unwrap(request: &str, kms_key: &Option<Vec<u8>>) -> String {
         match crate::tee::nitro::kms_decrypt(kms_key, &ciphertext) {
             Ok(plaintext) => {
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&plaintext);
-                eprintln!(
-                    "[uq/vsock] KMS unwrap: {} bytes decrypted",
-                    plaintext.len()
-                );
+                eprintln!("[uq/vsock] KMS unwrap: {} bytes decrypted", plaintext.len());
                 http_response(200, &b64)
             }
             Err(e) => {

@@ -36,10 +36,10 @@
 //! # att.cbor should decode as an EatToken containing the raw quote.
 //! ```
 
-use unified_quote::eat::{BuildComponents, EatToken, EAT_PROFILE, EAT_VERSION};
-use unified_quote::quote::{verify, Platform};
 use serde_json::Value;
 use std::fs;
+use unified_quote::eat::{BuildComponents, EatToken, EAT_PROFILE, EAT_VERSION};
+use unified_quote::quote::{verify, Platform};
 
 /// Load a testdata JSON blob by name.
 fn load(name: &str) -> Value {

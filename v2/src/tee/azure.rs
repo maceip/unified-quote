@@ -128,7 +128,10 @@ pub fn parse_hcl(hcl: &[u8]) -> Result<AzureEvidence, String> {
         return Err("runtime-data JSON bounds invalid".into());
     }
     let runtime = hcl[start..end].to_vec();
-    Ok(AzureEvidence { snp_report, runtime })
+    Ok(AzureEvidence {
+        snp_report,
+        runtime,
+    })
 }
 
 /// Verify a raw HCL report: AMD-rooted SNP signature/chain plus the
@@ -144,11 +147,9 @@ pub fn verify_hcl(hcl: &[u8]) -> Result<AzureVerdict, String> {
 
     let report_data = &ev.snp_report[0x50..0x90];
     if report_data[..32] != expected[..] {
-        return Err(
-            "Azure: SNP REPORT_DATA[0..32] != sha256(runtime-data) — \
+        return Err("Azure: SNP REPORT_DATA[0..32] != sha256(runtime-data) — \
              the vTPM AK is not bound to this hardware report"
-                .into(),
-        );
+            .into());
     }
 
     // Verify the SNP report against the AMD root. Passing the runtime hash as
@@ -240,11 +241,15 @@ fn verify_ak_quote(
     }
     let magic = u32::from_be_bytes(quote_msg[0..4].try_into().unwrap());
     if magic != 0xff54_4347 {
-        return Err(format!("bad TPMS_ATTEST magic 0x{magic:08x} (expected 0xff544347)"));
+        return Err(format!(
+            "bad TPMS_ATTEST magic 0x{magic:08x} (expected 0xff544347)"
+        ));
     }
     let typ = u16::from_be_bytes(quote_msg[4..6].try_into().unwrap());
     if typ != 0x8018 {
-        return Err(format!("TPM attest type 0x{typ:04x} is not ATTEST_QUOTE (0x8018)"));
+        return Err(format!(
+            "TPM attest type 0x{typ:04x} is not ATTEST_QUOTE (0x8018)"
+        ));
     }
     let mut off = 6usize;
     let qsn = u16::from_be_bytes(quote_msg[off..off + 2].try_into().unwrap()) as usize;
@@ -272,7 +277,9 @@ fn verify_ak_quote(
     }
     let sig_alg = u16::from_be_bytes(quote_sig[0..2].try_into().unwrap());
     if sig_alg != 0x0014 {
-        return Err(format!("TPM sig alg 0x{sig_alg:04x} is not RSASSA (0x0014)"));
+        return Err(format!(
+            "TPM sig alg 0x{sig_alg:04x} is not RSASSA (0x0014)"
+        ));
     }
     let sz = u16::from_be_bytes(quote_sig[4..6].try_into().unwrap()) as usize;
     if quote_sig.len() < 6 + sz {
@@ -305,7 +312,11 @@ pub fn verify_bundle(bundle: &AzureBundle) -> Result<AzureVerdict, String> {
     let hcl = hex::decode(&bundle.hcl).map_err(|e| format!("bundle.hcl hex: {e}"))?;
     let mut verdict = verify_hcl(&hcl)?;
 
-    match (&bundle.tpm_quote_msg, &bundle.tpm_quote_sig, &bundle.value_x) {
+    match (
+        &bundle.tpm_quote_msg,
+        &bundle.tpm_quote_sig,
+        &bundle.value_x,
+    ) {
         (Some(msg_hex), Some(sig_hex), Some(vx_hex)) => {
             let ev = parse_hcl(&hcl)?;
             let msg = hex::decode(msg_hex).map_err(|e| format!("tpm_quote_msg hex: {e}"))?;
@@ -321,7 +332,11 @@ pub fn verify_bundle(bundle: &AzureBundle) -> Result<AzureVerdict, String> {
             }
         }
         (None, None, _) => { /* platform-only bundle */ }
-        _ => return Err("bundle has a partial TPM quote (msg/sig/value_x must all be present)".into()),
+        _ => {
+            return Err(
+                "bundle has a partial TPM quote (msg/sig/value_x must all be present)".into(),
+            )
+        }
     }
     Ok(verdict)
 }
@@ -422,10 +437,20 @@ pub fn verify_attested_cert(cert_der: &[u8]) -> Result<AzureVerdict, String> {
     let expected = tls_binding(&cert_spki, &vx);
 
     let ev = parse_hcl(&hcl)?;
-    let msg = hex::decode(bundle.tpm_quote_msg.as_ref().ok_or("bundle missing tpm_quote_msg")?)
-        .map_err(|e| format!("tpm_quote_msg hex: {e}"))?;
-    let sig = hex::decode(bundle.tpm_quote_sig.as_ref().ok_or("bundle missing tpm_quote_sig")?)
-        .map_err(|e| format!("tpm_quote_sig hex: {e}"))?;
+    let msg = hex::decode(
+        bundle
+            .tpm_quote_msg
+            .as_ref()
+            .ok_or("bundle missing tpm_quote_msg")?,
+    )
+    .map_err(|e| format!("tpm_quote_msg hex: {e}"))?;
+    let sig = hex::decode(
+        bundle
+            .tpm_quote_sig
+            .as_ref()
+            .ok_or("bundle missing tpm_quote_sig")?,
+    )
+    .map_err(|e| format!("tpm_quote_sig hex: {e}"))?;
     verify_ak_quote(&ev.runtime, &msg, &sig, &expected)?;
 
     verdict.value_x_bound = Some(true);
@@ -509,9 +534,7 @@ pub fn read_hcl_report() -> Result<Vec<u8>, String> {
     let out = Command::new("tpm2_nvread")
         .args([AZURE_HCL_NV_INDEX, "-C", "o", "-o", "/dev/stdout"])
         .output()
-        .map_err(|e| {
-            format!("running tpm2_nvread (install tpm2-tools): {e}")
-        })?;
+        .map_err(|e| format!("running tpm2_nvread (install tpm2-tools): {e}"))?;
     if !out.status.success() {
         return Err(format!(
             "tpm2_nvread {AZURE_HCL_NV_INDEX} failed: {}",

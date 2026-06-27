@@ -633,10 +633,10 @@ fn verify_snp_quote(
             // shared across the VCEK and VLEK chains for a product line.
             if let (Some(ref ask), Some(ref ark)) = (&ask_der, &ark_der) {
                 verify_cert_sig(ark, ark)?; // ARK is self-signed (RSA-PSS)
-                // Pin to the ARK for the exact product line. An unrecognized
-                // product is a hard error — we will not silently fall back to a
-                // different vendor root (that would let a Turin/other quote be
-                // checked against the Milan root and rejected for the wrong reason).
+                                            // Pin to the ARK for the exact product line. An unrecognized
+                                            // product is a hard error — we will not silently fall back to a
+                                            // different vendor root (that would let a Turin/other quote be
+                                            // checked against the Milan root and rejected for the wrong reason).
                 let expected_fp = match product {
                     "Milan" => super::roots::AMD_ARK_MILAN_SHA256,
                     "Genoa" => super::roots::AMD_ARK_GENOA_SHA256,
@@ -971,7 +971,9 @@ fn verify_tdx_quote(
                                     super::roots::INTEL_SGX_ROOT_SHA256,
                                 );
                                 if !chain_ok {
-                                    eprintln!("[uq/verify] TDX: Intel root CA fingerprint mismatch");
+                                    eprintln!(
+                                        "[uq/verify] TDX: Intel root CA fingerprint mismatch"
+                                    );
                                 }
                             }
                             chain_verified = chain_ok;

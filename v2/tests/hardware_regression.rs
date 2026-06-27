@@ -30,9 +30,9 @@
 //!   a stage 0 only. Chain-walking on Nitro is a follow-up that needs
 //!   a second enclave running `cmd_run`.
 
+use std::fs;
 use unified_quote::eat::EatToken;
 use unified_quote::quote::{verify::verify_platform_quote, Platform};
-use std::fs;
 
 fn load(name: &str) -> Vec<u8> {
     let path = format!("testdata/chain/{name}");

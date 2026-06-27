@@ -47,8 +47,8 @@
 //! trust — the TEE key is already the only thing we trust, and it's
 //! already signing (via the quote).
 //!
-//! This is the same trade-off Andromeda/SIRRAH made: don't stack
-//! redundant crypto layers. One root of trust, one signature.
+//! One root of trust, one signature: we deliberately do not stack
+//! redundant crypto layers on top of the hardware quote.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -60,8 +60,43 @@ use crate::quote::Platform;
 pub const EAT_VERSION: u32 = 2;
 
 /// Profile identifier, serialized under the standard EAT `eat_profile`
-/// claim. Our profile URI namespace.
-pub const EAT_PROFILE: &str = "https://bountynet.dev/eat/v2";
+/// claim. Wire-visible, so it must not carry stale project branding.
+pub const EAT_PROFILE: &str = "https://uq.secure.build/eat/v2";
+
+/// Profile URIs accepted on decode for backward compatibility during the
+/// migration off the old branding. Tokens are still *emitted* under
+/// [`EAT_PROFILE`]; a verifier accepts any profile in this set so receipts
+/// produced by not-yet-redeployed nodes keep verifying.
+pub const EAT_PROFILE_ACCEPTED: &[&str] = &[EAT_PROFILE, "https://bountynet.dev/eat/v2"];
+
+/// Binding suite — selects the report_data layout + hash, versioned for
+/// crypto agility (L1.3). New suites can be added without a schema-version
+/// bump because verifiers dispatch on this field.
+///
+/// - `0` — v2 single-commitment SHA-256 layout (`report_data[0..32]` only).
+///   This is the historical layout; its hash does NOT mix the suite id, so
+///   suite-0 tokens are byte-for-byte identical to pre-suite tokens.
+/// - `1` — dual-commitment SHA-256 layout: the suite id + platform are folded
+///   into the binding hash, and `report_data[32..64]` carries a second
+///   commitment (see [`EatToken::second_commitment`]).
+pub const BINDING_SUITE_V2_SHA256: u16 = 0;
+pub const BINDING_SUITE_V3_SHA256_DUAL: u16 = 1;
+/// Suite a fresh producer uses unless it opts into a newer one.
+pub const DEFAULT_BINDING_SUITE: u16 = BINDING_SUITE_V2_SHA256;
+
+/// Domain separator for the `report_data[32..64]` second commitment.
+const SECOND_COMMITMENT_DOMAIN: &[u8] = b"uq/eat/report-data-2\0";
+
+/// serde skip predicate: omit `binding_suite` on the wire when it's the default.
+fn is_default_suite(s: &u16) -> bool {
+    *s == DEFAULT_BINDING_SUITE
+}
+
+/// Env var a challenger/issuer can set to inject the 32-byte freshness nonce
+/// (`eat_nonce`) at collection time (hex), instead of the producer choosing a
+/// random one. This closes the EAT replay window (L1.1): a captured token is
+/// only accepted by a verifier that issued the matching nonce.
+pub const EAT_NONCE_ENV: &str = "UQ_EAT_NONCE";
 
 /// Errors produced by encoding/decoding an EAT.
 #[derive(Debug, thiserror::Error)]
@@ -92,8 +127,14 @@ pub struct EatToken {
     /// Schema version. Must equal [`EAT_VERSION`] for today's format.
     pub version: u32,
 
-    /// Profile URI. Must equal [`EAT_PROFILE`].
+    /// Profile URI. Must be one of [`EAT_PROFILE_ACCEPTED`].
     pub eat_profile: String,
+
+    /// Binding suite id (crypto agility, L1.3). Omitted on the wire when it is
+    /// the default (`0`), so legacy tokens decode to suite 0 and suite-0
+    /// tokens stay byte-identical to pre-suite ones.
+    #[serde(default, skip_serializing_if = "is_default_suite")]
+    pub binding_suite: u16,
 
     /// Application identity — sha384 of the runner source files.
     /// This is Value X. LATTE layer 1. 48 bytes.
@@ -192,6 +233,18 @@ impl EatToken {
     /// the quote bytes back into the EAT without invalidating the
     /// binding.
     pub fn binding_bytes(&self) -> [u8; 32] {
+        match self.binding_suite {
+            BINDING_SUITE_V3_SHA256_DUAL => self.binding_bytes_v3(),
+            // Suite 0 (and any unknown — validate_shape rejects unknowns
+            // before this is reached on the verify path) use the historical
+            // layout, which intentionally does NOT hash the suite id.
+            _ => self.binding_bytes_v2(),
+        }
+    }
+
+    /// Historical (suite 0) SHA-256 binding. Byte-identical to the pre-suite
+    /// layout — do NOT change this function or every existing receipt breaks.
+    fn binding_bytes_v2(&self) -> [u8; 32] {
         let mut h = Sha256::new();
         h.update(self.version.to_be_bytes());
         h.update((self.eat_profile.len() as u32).to_be_bytes());
@@ -205,6 +258,64 @@ impl EatToken {
         h.update(self.eat_nonce);
         h.update(self.previous_hash());
         h.finalize().into()
+    }
+
+    /// Suite 1 binding: folds the suite id and platform discriminant into the
+    /// hash so the agility parameters are themselves authenticated.
+    fn binding_bytes_v3(&self) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(b"uq/eat/binding/v3\0");
+        h.update(self.binding_suite.to_be_bytes());
+        h.update(self.version.to_be_bytes());
+        h.update((self.eat_profile.len() as u32).to_be_bytes());
+        h.update(self.eat_profile.as_bytes());
+        h.update(self.value_x);
+        h.update([self.platform]);
+        h.update(self.tls_spki_hash);
+        h.update(self.source_hash);
+        h.update(self.artifact_hash);
+        h.update(self.iat.to_be_bytes());
+        h.update(self.eat_nonce);
+        h.update(self.previous_hash());
+        h.finalize().into()
+    }
+
+    /// The full 64-byte `report_data` to embed in a hardware quote:
+    /// `binding_bytes()` in `[0..32]` and a second commitment in `[32..64]`.
+    ///
+    /// SNP/TDX expose 64 bytes of `report_data` but the protocol historically
+    /// used only the first 32. This binds the second half (L1.2):
+    ///
+    /// - `challenge == None`: the second half is `value_x[..32]`. This is
+    ///   exactly what the producer already wrote, so existing receipts are
+    ///   unchanged and now have a *defined, verifiable* second half.
+    /// - `challenge == Some(c)`: the second half is
+    ///   `sha256(domain || c || value_x[..32])`, letting an issuer fold a
+    ///   second commitment (e.g. an issuance challenge) into the same quote
+    ///   without a second round-trip to the hardware.
+    pub fn report_data_64(&self, challenge: Option<&[u8; 32]>) -> [u8; 64] {
+        let mut rd = [0u8; 64];
+        rd[..32].copy_from_slice(&self.binding_bytes());
+        rd[32..].copy_from_slice(&self.second_commitment(challenge));
+        rd
+    }
+
+    /// The committed value the verifier expects in `report_data[32..64]`.
+    pub fn second_commitment(&self, challenge: Option<&[u8; 32]>) -> [u8; 32] {
+        match challenge {
+            None => {
+                let mut c = [0u8; 32];
+                c.copy_from_slice(&self.value_x[..32]);
+                c
+            }
+            Some(ch) => {
+                let mut h = Sha256::new();
+                h.update(SECOND_COMMITMENT_DOMAIN);
+                h.update(ch);
+                h.update(&self.value_x[..32]);
+                h.finalize().into()
+            }
+        }
     }
 
     /// Commitment to the previous stage's attestation. Returns a
@@ -271,7 +382,7 @@ impl EatToken {
                 got: self.version,
             });
         }
-        if self.eat_profile != EAT_PROFILE {
+        if !EAT_PROFILE_ACCEPTED.contains(&self.eat_profile.as_str()) {
             return Err(EatError::ProfileMismatch {
                 expected: EAT_PROFILE.to_string(),
                 got: self.eat_profile.clone(),
@@ -334,22 +445,26 @@ impl EatToken {
     /// `binding_bytes()` as `report_data[0..32]` — at which point the
     /// EAT becomes fully self-verifying against the hardware quote.
     pub fn from_build(c: BuildComponents) -> Self {
+        // Freshness (L1.1): a challenger/issuer can inject the nonce via the
+        // environment so a captured EAT can't be replayed inside its validity
+        // window. Absent that, fall back to random entropy (passive fetches
+        // just need two identical builds not to collide).
+        let nonce = nonce_from_env().unwrap_or_else(random_eat_nonce);
+        Self::from_build_with_nonce(c, nonce)
+    }
+
+    /// Like [`Self::from_build`] but with a caller/verifier-supplied freshness
+    /// nonce. Use when an issuer challenges the producer with a specific nonce.
+    pub fn from_build_with_nonce(c: BuildComponents, nonce: [u8; 32]) -> Self {
         let iat = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        // Nonce: random, 32 bytes. Used by verifiers for replay detection
-        // only if they provided it as a challenge — for passive fetches,
-        // this is just entropy to keep two identical builds from producing
-        // identical tokens.
-        let mut nonce = [0u8; 32];
-        use rand::RngCore;
-        rand::thread_rng().fill_bytes(&mut nonce);
-
         Self {
             version: EAT_VERSION,
             eat_profile: EAT_PROFILE.to_string(),
+            binding_suite: DEFAULT_BINDING_SUITE,
             value_x: c.value_x,
             platform: platform_to_u8(c.platform),
             platform_measurement: c.platform_measurement,
@@ -360,6 +475,35 @@ impl EatToken {
             iat,
             eat_nonce: nonce,
             previous_attestation: Vec::new(),
+        }
+    }
+}
+
+fn random_eat_nonce() -> [u8; 32] {
+    let mut nonce = [0u8; 32];
+    use rand::RngCore;
+    rand::thread_rng().fill_bytes(&mut nonce);
+    nonce
+}
+
+/// Parse a verifier-supplied freshness nonce from [`EAT_NONCE_ENV`] (64 hex
+/// chars). Returns `None` if unset; logs and ignores a malformed value.
+fn nonce_from_env() -> Option<[u8; 32]> {
+    let hexv = std::env::var(EAT_NONCE_ENV).ok()?;
+    let hexv = hexv.trim();
+    if hexv.is_empty() {
+        return None;
+    }
+    match hex::decode(hexv) {
+        Ok(b) if b.len() == 32 => {
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&b);
+            eprintln!("[uq] EAT freshness nonce supplied via {EAT_NONCE_ENV}");
+            Some(out)
+        }
+        _ => {
+            eprintln!("[uq] WARNING: {EAT_NONCE_ENV} set but not 32-byte hex; using random nonce");
+            None
         }
     }
 }
@@ -402,6 +546,7 @@ mod tests {
         EatToken {
             version: EAT_VERSION,
             eat_profile: EAT_PROFILE.to_string(),
+            binding_suite: DEFAULT_BINDING_SUITE,
             value_x: [0x11; 48],
             platform: 3, // Tdx
             platform_measurement: vec![0x22; 48],
@@ -485,6 +630,99 @@ mod tests {
         let bytes = t.to_cbor().unwrap();
         let err = EatToken::from_cbor(&bytes).unwrap_err();
         matches!(err, EatError::ProfileMismatch { .. });
+    }
+
+    #[test]
+    fn decode_accepts_legacy_profile() {
+        // Receipts from not-yet-redeployed nodes carry the old branding and
+        // must still verify during migration (L1.4).
+        let mut t = sample();
+        t.eat_profile = "https://bountynet.dev/eat/v2".to_string();
+        let bytes = t.to_cbor().unwrap();
+        let back = EatToken::from_cbor(&bytes).expect("legacy profile accepted");
+        assert_eq!(back.eat_profile, "https://bountynet.dev/eat/v2");
+    }
+
+    #[test]
+    fn suite0_binding_is_byte_identical_layout() {
+        // Suite 0 must not mix the suite id into the hash — otherwise existing
+        // hardware receipts (whose report_data was computed before suites
+        // existed) would stop verifying.
+        let t = sample();
+        assert_eq!(t.binding_suite, BINDING_SUITE_V2_SHA256);
+        // Recompute the historical layout by hand and compare.
+        let mut h = Sha256::new();
+        h.update(t.version.to_be_bytes());
+        h.update((t.eat_profile.len() as u32).to_be_bytes());
+        h.update(t.eat_profile.as_bytes());
+        h.update(t.value_x);
+        h.update([t.platform]);
+        h.update(t.tls_spki_hash);
+        h.update(t.source_hash);
+        h.update(t.artifact_hash);
+        h.update(t.iat.to_be_bytes());
+        h.update(t.eat_nonce);
+        h.update(t.previous_hash());
+        let expected: [u8; 32] = h.finalize().into();
+        assert_eq!(t.binding_bytes(), expected);
+    }
+
+    #[test]
+    fn suite_changes_binding() {
+        let mut t = sample();
+        let b0 = t.binding_bytes();
+        t.binding_suite = BINDING_SUITE_V3_SHA256_DUAL;
+        let b1 = t.binding_bytes();
+        assert_ne!(b0, b1, "suite id must change the binding under suite 1");
+    }
+
+    #[test]
+    fn suite0_omitted_on_wire() {
+        // serde must skip the default suite so suite-0 CBOR is unchanged.
+        let t = sample();
+        let bytes = t.to_cbor().unwrap();
+        let json = serde_json::to_string(&t).unwrap();
+        assert!(!json.contains("binding_suite"));
+        // and round-trips back to suite 0
+        let back = EatToken::from_cbor(&bytes).unwrap();
+        assert_eq!(back.binding_suite, BINDING_SUITE_V2_SHA256);
+    }
+
+    #[test]
+    fn report_data_second_half_default_is_value_x() {
+        // Backward compat: with no challenge, report_data[32..64] == value_x[..32]
+        // (exactly what the producer historically wrote).
+        let t = sample();
+        let rd = t.report_data_64(None);
+        assert_eq!(&rd[..32], &t.binding_bytes()[..]);
+        assert_eq!(&rd[32..], &t.value_x[..32]);
+    }
+
+    #[test]
+    fn report_data_second_half_challenge_binds() {
+        let t = sample();
+        let plain = t.report_data_64(None);
+        let ch = [0xABu8; 32];
+        let challenged = t.report_data_64(Some(&ch));
+        // First half (binding) unchanged; second half now commits the challenge.
+        assert_eq!(&plain[..32], &challenged[..32]);
+        assert_ne!(&plain[32..], &challenged[32..]);
+        assert_eq!(&challenged[32..], &t.second_commitment(Some(&ch))[..]);
+    }
+
+    #[test]
+    fn from_build_with_nonce_uses_supplied_nonce() {
+        let c = BuildComponents {
+            platform: Platform::Tdx,
+            value_x: [0u8; 48],
+            source_hash: [0u8; 48],
+            artifact_hash: [0u8; 48],
+            platform_measurement: Vec::new(),
+            platform_quote: Vec::new(),
+        };
+        let nonce = [0x5Au8; 32];
+        let t = EatToken::from_build_with_nonce(c, nonce);
+        assert_eq!(t.eat_nonce, nonce);
     }
 
     // ----- chain tests (AC contribution #6) -----

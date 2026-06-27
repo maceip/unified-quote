@@ -28,9 +28,9 @@
 //! What the live hardware test adds on top is exactly and only the
 //! signature verification — everything else is exercised here.
 
+use sha2::{Digest, Sha256};
 use unified_quote::eat::{BuildComponents, EatToken};
 use unified_quote::quote::Platform;
-use sha2::{Digest, Sha256};
 
 /// SNP-shaped quote: 1152 bytes, `report_data` slot at offset 0x50.
 fn fake_snp_quote_with_binding(binding: &[u8; 32]) -> Vec<u8> {
