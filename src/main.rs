@@ -50,18 +50,19 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(ATTEST_PORT);
 
     // --- Step 1: Detect TEE platform ---
+    // Fail closed: with no TEE there is no hardware root of trust, so there is
+    // nothing to attest. We refuse to run rather than serve an unattested
+    // ("insecure mode") endpoint — there is no flag or env var to override this.
     eprintln!("[uq] Detecting TEE platform...");
-    let tee_provider = match detect_tee() {
-        Ok(p) => {
-            eprintln!("[uq] Detected: {:?}", p.platform());
-            Some(p)
-        }
-        Err(e) => {
-            eprintln!("[uq] WARNING: No TEE detected ({e}). Running in insecure mode.");
-            eprintln!("[uq] Attestation will be unavailable.");
-            None
-        }
-    };
+    let p = detect_tee().map_err(|e| {
+        anyhow::anyhow!(
+            "no TEE detected ({e}): unified-quote requires a hardware TEE \
+             (AMD SEV-SNP, Intel TDX, or AWS Nitro). Refusing to start without a \
+             root of trust."
+        )
+    })?;
+    eprintln!("[uq] Detected: {:?}", p.platform());
+    let tee_provider = Some(p);
 
     // --- Step 2: Compute Value X ---
     eprintln!("[uq] Computing Value X from {}...", runner_dir.display());
