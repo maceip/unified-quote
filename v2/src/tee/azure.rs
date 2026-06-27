@@ -531,3 +531,19 @@ pub fn read_hcl_report() -> Result<Vec<u8>, String> {
 pub fn read_hcl_report() -> Result<Vec<u8>, String> {
     Err("Azure HCL collection is only supported on Linux guests".into())
 }
+
+// Collection touches the vTPM and is Linux-only. Verification (above) is
+// portable, so the CLI still builds and verifies on Windows/macOS — these
+// stubs keep the call sites compiling there with a clear runtime error.
+#[cfg(not(unix))]
+pub fn collect_bundle(_binding: Option<&[u8; 32]>) -> Result<AzureBundle, String> {
+    Err("`uq azure collect` reads the vTPM; run it on the Linux Azure CVM".into())
+}
+
+#[cfg(not(unix))]
+pub fn collect_attested_cert(
+    _domain: &str,
+    _value_x: &[u8; 32],
+) -> Result<(crate::net::attested_tls::AttestedCert, AzureBundle), String> {
+    Err("`uq azure serve-tls` mints from the vTPM; run it on the Linux Azure CVM".into())
+}
