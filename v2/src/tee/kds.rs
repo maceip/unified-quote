@@ -271,6 +271,10 @@ pub mod cache {
     /// Default TTL: the certs are immutable, so a week keeps KDS off the hot
     /// path without going stale in any meaningful way.
     const DEFAULT_TTL_SECS: u64 = 7 * 24 * 3600;
+    /// Hard ceiling so a misconfigured override can never serve stale KDS
+    /// evidence (VCEK/VLEK chains) indefinitely; freshness can be tightened but
+    /// never relaxed past 30 days.
+    const MAX_TTL_SECS: u64 = 30 * 24 * 3600;
 
     #[derive(serde::Serialize, serde::Deserialize)]
     struct Manifest {
@@ -306,12 +310,22 @@ pub mod cache {
         Some(PathBuf::from(home).join(".cache").join("uq").join("kds"))
     }
 
-    /// TTL, overridable via `UQ_KDS_CACHE_TTL_SECS`.
+    /// TTL, overridable via `UQ_KDS_CACHE_TTL_SECS` but hard-capped at
+    /// [`MAX_TTL_SECS`] so freshness can be tightened, never relaxed past the
+    /// ceiling.
     pub fn ttl_secs() -> u64 {
-        std::env::var("UQ_KDS_CACHE_TTL_SECS")
+        let requested = std::env::var("UQ_KDS_CACHE_TTL_SECS")
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok())
-            .unwrap_or(DEFAULT_TTL_SECS)
+            .unwrap_or(DEFAULT_TTL_SECS);
+        if requested > MAX_TTL_SECS {
+            eprintln!(
+                "[uq/kds] UQ_KDS_CACHE_TTL_SECS={requested} exceeds the {MAX_TTL_SECS}s cap; clamping"
+            );
+            MAX_TTL_SECS
+        } else {
+            requested
+        }
     }
 
     /// Return cached bytes for `url` if present, fresh, and digest-matched.
