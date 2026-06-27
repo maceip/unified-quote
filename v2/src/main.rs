@@ -994,10 +994,9 @@ fn cmd_verify(args: &[String]) -> anyhow::Result<()> {
     let mut att_path: Option<String> = None;
     let mut source_dir: Option<PathBuf> = None;
     let mut artifact_path: Option<PathBuf> = None;
-    // Secure by default: a quote that does not chain to the pinned vendor root
-    // fails verification. This explicit, loudly-named flag is the only way to
-    // proceed without the hardware root-of-trust (e.g. offline / no-KDS checks).
-    let mut allow_unverified_chain = false;
+    // Secure by default and with no override: a quote that does not chain to the
+    // pinned vendor root always fails verification. There is no flag to proceed
+    // without a confirmed hardware root-of-trust.
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -1008,9 +1007,6 @@ fn cmd_verify(args: &[String]) -> anyhow::Result<()> {
             "--artifact" => {
                 i += 1;
                 artifact_path = args.get(i).map(|s| PathBuf::from(s));
-            }
-            "--insecure-skip-chain" | "--no-chain" => {
-                allow_unverified_chain = true;
             }
             _ => {
                 if att_path.is_none() && !args[i].starts_with("--") {
@@ -1040,7 +1036,6 @@ fn cmd_verify(args: &[String]) -> anyhow::Result<()> {
         source_dir.as_deref(),
         artifact_path.as_deref(),
         canonical_binding,
-        allow_unverified_chain,
     )
 }
 
@@ -1049,7 +1044,6 @@ fn verify_attestation_json(
     source_dir: Option<&Path>,
     artifact_path: Option<&Path>,
     canonical_binding: Option<[u8; 32]>,
-    allow_unverified_chain: bool,
 ) -> anyhow::Result<()> {
     let platform_str = att_json["platform"].as_str().unwrap_or("");
     let ct_hex = att_json["source_hash"].as_str().unwrap_or("");
@@ -1144,9 +1138,9 @@ fn verify_attestation_json(
     // This is THE cryptographic proof that the quote is from real hardware —
     // the report signs back to a vendor key (VCEK/VLEK/Nitro), which chains to
     // a fingerprint we pin (AMD ARK / Intel SGX root / AWS Nitro root). It is
-    // the hardware root-of-trust, so it is authoritative: if it fails, the
-    // receipt is not trustworthy and verification fails. The only way past it
-    // is the explicit --insecure-skip-chain flag (offline / no-KDS checks).
+    // the hardware root-of-trust, so it is authoritative and there is no
+    // override: if it fails, or if there is no hardware platform at all, the
+    // receipt is not trustworthy and verification fails closed.
     eprintln!("[uq] Verifying TEE signature chain...");
     let platform = match platform_str {
         "Tdx" => Some(quote::Platform::Tdx),
@@ -1154,45 +1148,41 @@ fn verify_attestation_json(
         "Nitro" => Some(quote::Platform::Nitro),
         _ => None,
     };
-    // chain_verified == true ONLY when a real platform quote chains to the
-    // pinned vendor root. Receipts with no hardware platform (e.g. software
-    // witness) skip Check 4 entirely and never claim genuine hardware below.
-    let mut chain_verified = false;
-    if let Some(p) = platform {
-        let binding_arr: [u8; 32] = if binding_bytes.len() == 32 {
-            binding_bytes[..32].try_into().unwrap_or([0u8; 32])
-        } else {
-            [0u8; 32]
-        };
-        match quote::verify::verify_platform_quote(p, &quote_bytes, &binding_arr) {
-            Ok(measurements) => {
-                eprintln!("[uq] TEE signature chain: PASS");
-                for (name, val) in &measurements {
-                    eprintln!("[uq]   {}: {}", name, hex::encode(val));
-                }
-                chain_verified = true;
+    // A receipt with no hardware platform carries no hardware root of trust, so
+    // it is refused — there is no software-witness acceptance.
+    let p = match platform {
+        Some(p) => p,
+        None => {
+            eprintln!("[uq]");
+            eprintln!("[uq] === Verification FAILED ===");
+            eprintln!(
+                "[uq] No hardware platform in the receipt — refused (attestation \
+                 requires a hardware root of trust)."
+            );
+            std::process::exit(1);
+        }
+    };
+    let binding_arr: [u8; 32] = if binding_bytes.len() == 32 {
+        binding_bytes[..32].try_into().unwrap_or([0u8; 32])
+    } else {
+        [0u8; 32]
+    };
+    match quote::verify::verify_platform_quote(p, &quote_bytes, &binding_arr) {
+        Ok(measurements) => {
+            eprintln!("[uq] TEE signature chain: PASS");
+            for (name, val) in &measurements {
+                eprintln!("[uq]   {}: {}", name, hex::encode(val));
             }
-            Err(e) => {
-                eprintln!("[uq] TEE signature chain: FAIL — {e}");
-                if allow_unverified_chain {
-                    eprintln!(
-                        "[uq] WARNING: --insecure-skip-chain set — proceeding WITHOUT a \
-                         confirmed hardware root-of-trust. Do not trust this for release."
-                    );
-                } else {
-                    eprintln!("[uq]");
-                    eprintln!("[uq] === Verification FAILED ===");
-                    eprintln!(
-                        "[uq] The quote did not chain to the pinned {platform_str} vendor \
-                         root, so genuine hardware cannot be asserted."
-                    );
-                    eprintln!(
-                        "[uq] (For an offline / no-KDS check you can override with \
-                         --insecure-skip-chain.)"
-                    );
-                    std::process::exit(1);
-                }
-            }
+        }
+        Err(e) => {
+            eprintln!("[uq] TEE signature chain: FAIL — {e}");
+            eprintln!("[uq]");
+            eprintln!("[uq] === Verification FAILED ===");
+            eprintln!(
+                "[uq] The quote did not chain to the pinned {platform_str} vendor \
+                 root, so genuine hardware cannot be asserted."
+            );
+            std::process::exit(1);
         }
     }
 
@@ -1256,18 +1246,11 @@ fn verify_attestation_json(
 
     eprintln!();
     eprintln!("[uq] === Verification Complete ===");
-    if chain_verified {
-        eprintln!(
-            "[uq] This artifact was built from this source inside genuine {platform_str} hardware."
-        );
-    } else {
-        // Reached only via --insecure-skip-chain or a non-hardware (software
-        // witness) receipt. Bindings hold, but we make no genuine-hardware claim.
-        eprintln!(
-            "[uq] Bindings and measurements are internally consistent, but the hardware \
-             root-of-trust was NOT confirmed."
-        );
-    }
+    // Reaching here means the hardware signature chain verified — the only
+    // non-error path through Check 4 above.
+    eprintln!(
+        "[uq] This artifact was built from this source inside genuine {platform_str} hardware."
+    );
 
     Ok(())
 }
