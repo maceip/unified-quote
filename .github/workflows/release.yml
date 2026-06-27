@@ -1,0 +1,101 @@
+name: release
+
+# Every push to main cuts a tagged release with cross-platform `uq` binaries.
+# Verification is fully portable; TEE collection is cfg-gated to the platforms
+# that have the hardware, so the CLI builds and runs everywhere.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "v2/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build uq
+        run: cargo build --release -p unified-quote --bin uq --target ${{ matrix.target }}
+
+      - name: Stage (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          out="uq-${{ matrix.target }}"
+          cp "target/${{ matrix.target }}/release/uq" "dist/$out"
+          ( cd dist && shasum -a 256 "$out" > "$out.sha256" )
+
+      - name: Stage (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist -Force | Out-Null
+          $out = "uq-${{ matrix.target }}.exe"
+          Copy-Item "target/${{ matrix.target }}/release/uq.exe" "dist/$out"
+          (Get-FileHash "dist/$out" -Algorithm SHA256).Hash.ToLower() + "  $out" | Set-Content "dist/$out.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uq-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la dist
+
+      - name: Build provenance for the binaries
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "dist/uq-*"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.1.${{ github.run_number }}
+          name: uq v0.1.${{ github.run_number }}
+          generate_release_notes: true
+          files: dist/*
