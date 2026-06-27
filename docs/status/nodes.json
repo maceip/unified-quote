@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-06-27T16:37:27Z",
+  "updated_at": "2026-06-27T17:07:33Z",
   "generator": "report-live-quotes.yml",
   "schema": 1,
   "nodes": [
@@ -20,7 +20,7 @@
       "spki_binding": "PASS",
       "quote_signature": "PASS",
       "chain": "PASS (2 stage(s) walked)",
-      "checked_at": "2026-06-27T16:37:27Z",
+      "checked_at": "2026-06-27T17:07:33Z",
       "detail": "quote re-verified against pinned vendor root"
     },
     {
@@ -41,7 +41,7 @@
       "spki_binding": "PASS",
       "quote_signature": "PASS",
       "chain": "leaf only (no previous stage)",
-      "checked_at": "2026-06-27T16:37:27Z",
+      "checked_at": "2026-06-27T17:07:33Z",
       "detail": "quote re-verified against pinned vendor root"
     },
     {
@@ -58,7 +58,7 @@
       "spki_binding": "report_data = sha256(runtime) \u2192 vTPM AK",
       "quote_signature": "FAIL",
       "chain": "vTPM HCL \u2192 SNP report \u2192 VCEK \u2192 ASK \u2192 ARK-Milan (pinned)",
-      "checked_at": "2026-06-27T16:37:27Z",
+      "checked_at": "2026-06-27T17:07:33Z",
       "detail": "uq azure serve   [-f azure-hcl.bin] [--port 8443]",
       "value_x_bound": false
     },
