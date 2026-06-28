@@ -59,3 +59,16 @@ on-disk format does not change.
 
 Clients set their own acceptance policy. The registry is the source of
 truth; what to do with it is local.
+
+## eat-pass / mobile binding
+
+When minting eat-pass tokens from a CVM or mobile app:
+
+- **Channel binding** — `value_x` / quote `report_data` must equal
+  `binding_of(blinded)` from the mint (Hanff CCS 2025).
+- **EAT freshness** — verifiers may set `UQ_EAT_NONCE` (64 hex) before quote
+  collection so `eat_nonce` is server-chosen (Fahl ASIACCS 2023 pattern).
+  See `v2/src/eat.rs` (`EAT_NONCE_ENV`).
+
+Mobile attestation bundles live in `v2/src/tee/mobile/`; policy uses
+`app_id_hash` on the attester (Leierzopf SPICES 2025).

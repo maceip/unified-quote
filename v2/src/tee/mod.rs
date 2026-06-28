@@ -15,6 +15,10 @@ pub mod nitro;
 pub mod snp;
 #[cfg(all(feature = "tdx", unix))]
 pub mod tdx;
+#[cfg(feature = "desktop")]
+pub mod desktop;
+#[cfg(feature = "mobile")]
+pub mod mobile;
 pub mod tpm;
 
 use crate::quote::Platform;
