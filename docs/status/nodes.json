@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-06-29T04:07:01Z",
+  "updated_at": "2026-06-29T04:53:50Z",
   "generator": "report-live-quotes.yml",
   "schema": 1,
   "nodes": [
@@ -20,7 +20,7 @@
       "spki_binding": "PASS",
       "quote_signature": "PASS",
       "chain": "PASS (2 stage(s) walked)",
-      "checked_at": "2026-06-29T04:07:00Z",
+      "checked_at": "2026-06-29T04:53:46Z",
       "detail": "quote re-verified against pinned vendor root"
     },
     {
@@ -41,7 +41,7 @@
       "spki_binding": "PASS",
       "quote_signature": "PASS",
       "chain": "leaf only (no previous stage)",
-      "checked_at": "2026-06-29T04:07:01Z",
+      "checked_at": "2026-06-29T04:53:47Z",
       "detail": "quote re-verified against pinned vendor root"
     },
     {
@@ -51,16 +51,18 @@
       "region": "westeurope",
       "platform": "SevSnp",
       "endpoint": "https://attest.secure.build:8443/",
-      "verdict": "failed",
-      "value_x": null,
-      "value_x_short": null,
-      "measurements": {},
-      "spki_binding": "report_data = sha256(runtime) \u2192 vTPM AK",
-      "quote_signature": "FAIL",
+      "verdict": "verified",
+      "value_x": "9ad82f00c05fd1da7acfe60770bec3a1d2c8e97300bb7bf5889c34d669e5958a",
+      "value_x_short": "9ad82f00c05fd1da",
+      "measurements": {
+        "MEASUREMENT": "41f77fe5c1416343f84dbeeded504eb4a2c450861317ed3e4e46cd771c79243a4cbeb3d75ec663e6a7a47bd1f4fab503"
+      },
+      "spki_binding": "report_data \u2192 vTPM AK \u2192 AK quote binds value_x",
+      "quote_signature": "verified",
       "chain": "vTPM HCL \u2192 SNP report \u2192 VCEK \u2192 ASK \u2192 ARK-Milan (pinned)",
-      "checked_at": "2026-06-29T04:07:01Z",
-      "detail": "uq azure serve   [-f azure-hcl.bin] [--port 8443]",
-      "value_x_bound": false
+      "checked_at": "2026-06-29T04:53:50Z",
+      "detail": "vTPM SNP re-verified against the AMD root; value_x bound via AK quote (GitHub build provenance \u2192 silicon)",
+      "value_x_bound": true
     },
     {
       "id": "gcp-tdx-usc1",

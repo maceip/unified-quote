@@ -23,13 +23,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build verifier (includes `uq azure check-tls`)
+        run: cargo build --release -p unified-quote --bin uq
+
       - name: Verify each node and write status
         run: |
           set -euo pipefail
-          chmod +x dist/uq-linux-x86_64
           python3 deploy/report_nodes.py
         env:
-          UQ_BIN: dist/uq-linux-x86_64
+          UQ_BIN: target/release/uq
           NODES_CONFIG: deploy/nodes.config.json
           STATUS_OUT: docs/status/nodes.json
 
