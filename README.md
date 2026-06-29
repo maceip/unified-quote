@@ -152,6 +152,9 @@ verifies its receipts under it, and cvm-agent meshes the whole stack on top.
 
 pages: https://maceip.github.io/unified-quote/
 
+live dashboard: https://maceip.github.io/unified-quote/live.html — aws sev-snp, aws
+nitro, and azure sev-snp all show verified; azure value_x is registry-recommended.
+
 ## license
 
 mit

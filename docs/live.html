@@ -11,20 +11,47 @@
     .live-wrap { max-width: 1100px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
     .live-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.75rem 1.25rem; margin-bottom: 0.5rem; }
     .live-meta { opacity: 0.7; font-size: 0.85rem; }
-    .node-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.25rem; margin-top: 1.5rem; }
-    .node-card { border: 1px solid var(--background2, #333); border-radius: 6px; padding: 1.1rem 1.25rem; background: var(--background1, #111); }
-    .node-card h3 { margin: 0 0 0.15rem; font-size: 1.05rem; }
-    .node-sub { opacity: 0.65; font-size: 0.8rem; margin-bottom: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; }
-    .kv { display: grid; grid-template-columns: 7.5rem 1fr; gap: 0.3rem 0.75rem; font-size: 0.86rem; }
-    .kv dt { opacity: 0.6; }
-    .kv dd { margin: 0; word-break: break-all; font-variant-numeric: tabular-nums; }
-    .verdict { display: inline-block; padding: 0.1rem 0.6rem; border-radius: 999px; font-size: 0.74rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+    .verdict-legend {
+      display: flex; flex-wrap: wrap; gap: 0.5rem 1rem;
+      margin: 1.25rem 0 0.5rem; padding: 0.85rem 1rem;
+      border: 1px solid var(--background2, #333); border-radius: 6px;
+      font-size: 0.82rem; background: rgba(0,0,0,0.15);
+    }
+    .verdict-legend dt { font-weight: 600; margin: 0; }
+    .verdict-legend dd { margin: 0 0 0 0.35rem; opacity: 0.85; }
+    .verdict-legend > div { display: flex; align-items: baseline; flex-wrap: wrap; }
+    .node-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.25rem; margin-top: 1.5rem; }
+    .node-card {
+      border: 1px solid var(--background2, #333); border-radius: 6px;
+      padding: 1.1rem 1.25rem 0.9rem; background: var(--background1, #111);
+      display: flex; flex-direction: column; gap: 0.65rem;
+    }
+    .node-card h3 { margin: 0; font-size: 1.05rem; display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+    .node-sub { opacity: 0.65; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .node-summary { margin: 0; font-size: 0.92rem; line-height: 1.45; }
+    .node-meta { margin: 0; font-size: 0.82rem; opacity: 0.72; }
+    .node-meta a { color: inherit; }
+    .verdict {
+      display: inline-block; padding: 0.12rem 0.55rem; border-radius: 999px;
+      font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+      white-space: nowrap;
+    }
     .verdict.verified { background: #0f5132; color: #d1f7e0; }
     .verdict.failed   { background: #5c1a1a; color: #ffd6d6; }
     .verdict.pending  { background: #4a3f12; color: #f7ecc0; }
     .verdict.offline  { background: #333; color: #bbb; }
     .verdict.blocked  { background: #4a2c12; color: #f7d6c0; }
     .verdict.planned  { background: #2a3550; color: #cdd9f7; }
+    .node-card details {
+      margin-top: 0.15rem; border-top: 1px solid var(--background2, #333); padding-top: 0.55rem;
+    }
+    .node-card summary {
+      cursor: pointer; font-size: 0.8rem; opacity: 0.75; user-select: none;
+    }
+    .node-card summary:hover { opacity: 1; }
+    .kv { display: grid; grid-template-columns: 6.5rem 1fr; gap: 0.25rem 0.65rem; font-size: 0.8rem; margin: 0.65rem 0 0; }
+    .kv dt { opacity: 0.55; }
+    .kv dd { margin: 0; word-break: break-all; font-variant-numeric: tabular-nums; }
     .empty { opacity: 0.6; padding: 2rem 0; }
     a.back { font-size: 0.85rem; opacity: 0.8; }
   </style>
@@ -35,7 +62,7 @@
       <span class="brand-mark">RC</span>
       <span>unified-quote</span>
     </a>
-    <nav is-="toolbar" class="top-nav" aria-label="Primary navigation">
+      <nav is-="toolbar" class="top-nav" aria-label="Primary navigation">
       <a href="index.html">overview</a>
       <a href="live.html" aria-current="page">live</a>
       <a href="https://github.com/maceip/unified-quote">github</a>
@@ -48,11 +75,18 @@
       <span is-="badge" variant-="primary">cross-cloud attestation</span>
     </div>
     <p class="lede" style="margin-top:0.25rem;">
-      Each node below is independently re-verified by a scheduled GitHub workflow
-      that runs <code>uq check</code> against its attested-TLS endpoint. The
-      verdict reflects a fresh hardware-quote verification, not a static claim.
+      Scheduled checks re-verify each cloud TEE every 15&nbsp;minutes.
+      A green <strong>verified</strong> badge means the hardware quote still
+      chains to our pinned vendor root — not a cached or self-reported claim.
     </p>
     <p class="live-meta" id="meta">loading status&hellip;</p>
+
+    <dl class="verdict-legend" id="legend" aria-label="Verdict meanings">
+      <div><dt class="verdict verified">verified</dt><dd>quote checked just now; signature and trust chain OK</dd></div>
+      <div><dt class="verdict failed">failed</dt><dd>endpoint answered but attestation did not verify</dd></div>
+      <div><dt class="verdict offline">offline</dt><dd>endpoint unreachable from CI</dd></div>
+      <div><dt class="verdict planned">planned</dt><dd>not deployed yet — nothing to check</dd></div>
+    </dl>
 
     <div class="node-grid" id="grid"></div>
     <p class="empty" id="empty" hidden>No nodes have reported yet.</p>
@@ -69,43 +103,95 @@
       const meta = document.getElementById("meta");
       const empty = document.getElementById("empty");
 
+      const VERDICT_HELP = {
+        verified: "Hardware quote verified against pinned vendor root.",
+        failed: "Attestation check failed — quote or chain did not verify.",
+        offline: "Could not reach the attested-TLS endpoint.",
+        pending: "Registered; waiting for first live check.",
+        planned: "Node not deployed yet.",
+        blocked: "Check blocked by policy or configuration.",
+      };
+
       const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => (
         { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]
       ));
 
       const fmtTime = (iso) => {
-        if (!iso) return "never";
+        if (!iso) return null;
         const d = new Date(iso);
         return Number.isNaN(d.getTime()) ? esc(iso) : d.toUTCString();
+      };
+
+      const fmtRel = (iso) => {
+        if (!iso) return "never checked";
+        const d = new Date(iso);
+        if (Number.isNaN(d.getTime())) return esc(iso);
+        const mins = Math.round((Date.now() - d.getTime()) / 60000);
+        if (mins < 1) return "just now";
+        if (mins < 60) return mins + " min ago";
+        const hrs = Math.round(mins / 60);
+        if (hrs < 48) return hrs + " h ago";
+        return fmtTime(iso);
       };
 
       const row = (k, v) => v == null || v === "" ? "" :
         `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`;
 
-      const measurementsRows = (m) => {
-        if (!m || typeof m !== "object") return "";
-        return Object.entries(m).slice(0, 4)
-          .map(([k, v]) => row(k, typeof v === "string" ? v.slice(0, 24) + (v.length > 24 ? "…" : "") : v))
-          .join("");
+      const primaryMeasurement = (n) => {
+        const m = n.measurements;
+        if (!m || typeof m !== "object") return null;
+        const key = m.MEASUREMENT ? "MEASUREMENT" : Object.keys(m)[0];
+        return key ? key + " " + String(m[key]).slice(0, 24) + "…" : null;
+      };
+
+      const summaryLine = (n) => {
+        const v = (n.verdict || "pending").toLowerCase();
+        if (v === "verified") {
+          if (n.value_x_bound) {
+            return "Attestation live. Build digest (value_x) bound through hardware to silicon.";
+          }
+          return n.detail || "Hardware quote re-verified against pinned vendor root.";
+        }
+        if (v === "planned") return n.detail || "Deployment planned; no live endpoint yet.";
+        if (v === "offline") return "CI could not reach this endpoint within the check window.";
+        if (v === "failed") return n.detail || "Quote or trust-chain verification failed.";
+        return n.detail || VERDICT_HELP[v] || "Awaiting first check.";
+      };
+
+      const technicalRows = (n) => {
+        const rows = [
+          row("endpoint", n.endpoint),
+          row("value x", n.value_x_short || n.value_x),
+          row("quote sig", n.quote_signature),
+          row("chain", n.chain),
+          row("spki bind", n.spki_binding),
+          primaryMeasurement(n) ? row("measure", primaryMeasurement(n)) : "",
+        ].join("");
+        return rows ? `<dl class="kv">${rows}</dl>` : "";
       };
 
       const card = (n) => {
         const verdict = (n.verdict || "pending").toLowerCase();
+        const help = VERDICT_HELP[verdict] || "";
+        const checked = fmtRel(n.checked_at);
+        const loc = [n.cloud, n.region].filter(Boolean).join(" · ");
+        const endpoint = n.endpoint
+          ? `<a href="${esc(n.endpoint)}" rel="noopener">${esc(n.endpoint)}</a>`
+          : "—";
+        const tech = technicalRows(n);
+
         return `<article class="node-card">
-          <h3>${esc(n.label || n.id)}
-            <span class="verdict ${esc(verdict)}">${esc(verdict)}</span>
+          <h3>
+            ${esc(n.label || n.id)}
+            <span class="verdict ${esc(verdict)}" title="${esc(help)}">${esc(verdict)}</span>
           </h3>
-          <div class="node-sub">${esc(n.cloud || "")} · ${esc(n.region || "")} · ${esc(n.platform || "")}</div>
-          <dl class="kv">
-            ${row("value x", n.value_x_short || n.value_x)}
-            ${row("spki bind", n.spki_binding)}
-            ${row("quote sig", n.quote_signature)}
-            ${row("chain", n.chain)}
-            ${measurementsRows(n.measurements)}
-            ${row("endpoint", n.endpoint)}
-            ${row("checked", fmtTime(n.checked_at))}
-            ${row("detail", n.detail)}
-          </dl>
+          <div class="node-sub">${esc(loc)}${n.platform ? " · " + esc(n.platform) : ""}</div>
+          <p class="node-summary">${esc(summaryLine(n))}</p>
+          <p class="node-meta">Checked ${esc(checked)} · ${endpoint}</p>
+          ${tech ? `<details>
+            <summary>Technical details</summary>
+            ${tech}
+          </details>` : ""}
         </article>`;
       };
 
@@ -113,8 +199,8 @@
         .then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
         .then((data) => {
           const nodes = Array.isArray(data.nodes) ? data.nodes : [];
-          meta.textContent = "last updated: " + fmtTime(data.updated_at) +
-            " · " + nodes.length + " node(s) · generated by " + (data.generator || "report workflow");
+          meta.textContent = "Dashboard refreshed " + fmtRel(data.updated_at) +
+            " · " + nodes.length + " node(s) · source: " + (data.generator || "report workflow");
           if (nodes.length === 0) { empty.hidden = false; return; }
           grid.innerHTML = nodes.map(card).join("");
         })
