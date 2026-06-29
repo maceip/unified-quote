@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-06-29T11:15:41Z",
+  "updated_at": "2026-06-29T12:46:44Z",
   "generator": "report-live-quotes.yml",
   "schema": 1,
   "nodes": [
@@ -20,7 +20,7 @@
       "spki_binding": "PASS",
       "quote_signature": "PASS",
       "chain": "PASS (2 stage(s) walked)",
-      "checked_at": "2026-06-29T11:15:39Z",
+      "checked_at": "2026-06-29T12:46:43Z",
       "detail": "quote re-verified against pinned vendor root"
     },
     {
@@ -41,7 +41,7 @@
       "spki_binding": "PASS",
       "quote_signature": "PASS",
       "chain": "leaf only (no previous stage)",
-      "checked_at": "2026-06-29T11:15:40Z",
+      "checked_at": "2026-06-29T12:46:43Z",
       "detail": "quote re-verified against pinned vendor root"
     },
     {
@@ -60,7 +60,7 @@
       "spki_binding": "report_data \u2192 vTPM AK \u2192 AK quote binds value_x",
       "quote_signature": "verified",
       "chain": "vTPM HCL \u2192 SNP report \u2192 VCEK \u2192 ASK \u2192 ARK-Milan (pinned)",
-      "checked_at": "2026-06-29T11:15:41Z",
+      "checked_at": "2026-06-29T12:46:44Z",
       "detail": "vTPM SNP re-verified against the AMD root; value_x bound via AK quote (GitHub build provenance \u2192 silicon)",
       "value_x_bound": true
     },
