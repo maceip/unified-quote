@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-06-29T14:15:33Z",
+  "updated_at": "2026-06-29T15:31:55Z",
   "generator": "report-live-quotes.yml",
   "schema": 1,
   "nodes": [
@@ -20,7 +20,7 @@
       "spki_binding": "PASS",
       "quote_signature": "PASS",
       "chain": "PASS (2 stage(s) walked)",
-      "checked_at": "2026-06-29T14:15:31Z",
+      "checked_at": "2026-06-29T15:31:10Z",
       "detail": "quote re-verified against pinned vendor root"
     },
     {
@@ -30,19 +30,15 @@
       "region": "us-east-2",
       "platform": "Nitro",
       "endpoint": "https://3.17.186.5/",
-      "verdict": "verified",
-      "value_x": "5d108f53301a3f6e364ae80c060cbcb134c1a195a223d6f9f027c0b4dc5005287d5d2dd298f74304b5148048e626d599",
-      "value_x_short": "5d108f53301a3f6e",
-      "measurements": {
-        "PCR0": "1289f1bdde608e067b1e7975c5a86eae649d78af130144f2ddced9d2973992e0cede7227e8f0e9e7e2a0de9aac2a0bdd",
-        "PCR1": "4b4d5b3661b3efc12920900c80e126e4ce783c522de6c02a2a5bf7af3a2b9327b86776f188e4be1c1c404a129dbda493",
-        "PCR2": "0c17521f5a4bcd1fae5df9783ee5989011ca3e123ad51a6befa7981380951b600aa9cfc7a7eafbcabb35f4952c28c8ca"
-      },
-      "spki_binding": "PASS",
-      "quote_signature": "PASS",
-      "chain": "leaf only (no previous stage)",
-      "checked_at": "2026-06-29T14:15:32Z",
-      "detail": "quote re-verified against pinned vendor root"
+      "verdict": "offline",
+      "value_x": null,
+      "value_x_short": null,
+      "measurements": {},
+      "spki_binding": null,
+      "quote_signature": null,
+      "chain": null,
+      "checked_at": "2026-06-29T15:31:55Z",
+      "detail": "no response within 45s"
     },
     {
       "id": "azure-cvm-we",
@@ -60,7 +56,7 @@
       "spki_binding": "report_data \u2192 vTPM AK \u2192 AK quote binds value_x",
       "quote_signature": "verified",
       "chain": "vTPM HCL \u2192 SNP report \u2192 VCEK \u2192 ASK \u2192 ARK-Milan (pinned)",
-      "checked_at": "2026-06-29T14:15:33Z",
+      "checked_at": "2026-06-29T15:31:55Z",
       "detail": "vTPM SNP re-verified against the AMD root; value_x bound via AK quote (GitHub build provenance \u2192 silicon)",
       "value_x_bound": true
     },
