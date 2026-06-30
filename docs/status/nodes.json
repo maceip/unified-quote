@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-06-30T16:08:58Z",
+  "updated_at": "2026-06-30T16:58:49Z",
   "generator": "report-live-quotes.yml",
   "schema": 1,
   "nodes": [
@@ -20,7 +20,7 @@
       "spki_binding": "PASS",
       "quote_signature": "PASS",
       "chain": "PASS (2 stage(s) walked)",
-      "checked_at": "2026-06-30T16:08:55Z",
+      "checked_at": "2026-06-30T16:58:46Z",
       "detail": "quote re-verified against pinned vendor root"
     },
     {
@@ -37,7 +37,7 @@
       "spki_binding": null,
       "quote_signature": null,
       "chain": null,
-      "checked_at": "2026-06-30T16:08:58Z",
+      "checked_at": "2026-06-30T16:58:48Z",
       "detail": "Error: TLS write: Connection reset by peer (os error 104)"
     },
     {
@@ -56,7 +56,7 @@
       "spki_binding": "report_data \u2192 vTPM AK \u2192 AK quote binds value_x",
       "quote_signature": "verified",
       "chain": "vTPM HCL \u2192 SNP report \u2192 VCEK \u2192 ASK \u2192 ARK-Milan (pinned)",
-      "checked_at": "2026-06-30T16:08:58Z",
+      "checked_at": "2026-06-30T16:58:49Z",
       "detail": "vTPM SNP re-verified against the AMD root; value_x bound via AK quote (GitHub build provenance \u2192 silicon)",
       "value_x_bound": true
     },
