@@ -25,9 +25,7 @@ pub const TIER_SOFTWARE_WITNESS: &str = "software-witness";
 pub fn assurance_tier(platform: &str, ima_verified: bool) -> (&'static str, String) {
     let p = platform.trim().to_ascii_lowercase().replace('_', "-");
     match p.as_str() {
-        "sev-snp" | "tdx" | "nitro" | "aws-nitro" | "azure-sev-snp-vtpm" => {
-            (TIER_SILICON_CVM, p)
-        }
+        "sev-snp" | "tdx" | "nitro" | "aws-nitro" | "azure-sev-snp-vtpm" => (TIER_SILICON_CVM, p),
         "linux-tpm-client" | "windows-tpm-client" => {
             let detail = if ima_verified {
                 "tpm-ima"
@@ -39,9 +37,7 @@ pub fn assurance_tier(platform: &str, ima_verified: bool) -> (&'static str, Stri
         "macos-app-attest" | "ios-app-attest" | "android-key-attestation" => {
             (TIER_DEVICE_ATTESTED, "app-attest".to_string())
         }
-        "macos-host-attested-guest" => {
-            (TIER_DEVICE_ATTESTED, "host-attested-guest".to_string())
-        }
+        "macos-host-attested-guest" => (TIER_DEVICE_ATTESTED, "host-attested-guest".to_string()),
         other if other.starts_with("relay") => (TIER_RELAY_INHERITED, "relay".to_string()),
         other => (TIER_SOFTWARE_WITNESS, other.to_string()),
     }
@@ -55,7 +51,10 @@ mod tests {
     fn silicon_roots() {
         assert_eq!(assurance_tier("sev-snp", false).0, TIER_SILICON_CVM);
         assert_eq!(assurance_tier("tdx", false).0, TIER_SILICON_CVM);
-        assert_eq!(assurance_tier("azure-sev-snp-vtpm", false).0, TIER_SILICON_CVM);
+        assert_eq!(
+            assurance_tier("azure-sev-snp-vtpm", false).0,
+            TIER_SILICON_CVM
+        );
     }
 
     #[test]
@@ -72,7 +71,10 @@ mod tests {
 
     #[test]
     fn app_attest_and_host_guest() {
-        assert_eq!(assurance_tier("macos-app-attest", false).0, TIER_DEVICE_ATTESTED);
+        assert_eq!(
+            assurance_tier("macos-app-attest", false).0,
+            TIER_DEVICE_ATTESTED
+        );
         assert_eq!(
             assurance_tier("macos-host-attested-guest", false),
             (TIER_DEVICE_ATTESTED, "host-attested-guest".to_string())
@@ -81,8 +83,14 @@ mod tests {
 
     #[test]
     fn relay_and_software_floor() {
-        assert_eq!(assurance_tier("relay-inherited", false).0, TIER_RELAY_INHERITED);
-        assert_eq!(assurance_tier("software-witness", false).0, TIER_SOFTWARE_WITNESS);
+        assert_eq!(
+            assurance_tier("relay-inherited", false).0,
+            TIER_RELAY_INHERITED
+        );
+        assert_eq!(
+            assurance_tier("software-witness", false).0,
+            TIER_SOFTWARE_WITNESS
+        );
         assert_eq!(assurance_tier("whatever", false).0, TIER_SOFTWARE_WITNESS);
     }
 }

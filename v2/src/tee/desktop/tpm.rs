@@ -15,7 +15,9 @@
 use std::collections::BTreeMap;
 
 use der::Decode;
-use p256::ecdsa::{signature::Verifier, Signature as P256Sig, VerifyingKey as P256Vk};
+use p256::ecdsa::{
+    signature::hazmat::PrehashVerifier, Signature as P256Sig, VerifyingKey as P256Vk,
+};
 use p384::ecdsa::{Signature as P384Sig, VerifyingKey as P384Vk};
 use sha2::{Digest, Sha256, Sha384};
 use x509_cert::Certificate;
@@ -25,8 +27,10 @@ use super::{desktop_build_id_hash, DesktopVerdict, LINUX_TPM_PLATFORM, WINDOWS_T
 const TPM_GENERATED_VALUE: u32 = 0xff54_4347;
 const TPM_ST_ATTEST_QUOTE: u16 = 0x8018;
 const TPM_ALG_SHA256: u16 = 0x000b;
+const TPM_ALG_SHA384: u16 = 0x000c;
 const TPM_ALG_ECDSA: u16 = 0x0018;
 const TPM_ALG_RSASSA: u16 = 0x0014;
+const TPM_ALG_RSAPSS: u16 = 0x0016;
 
 /// A single TPM PCR value reported alongside the quote.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -314,7 +318,9 @@ fn boot_aggregate_over_0_9(pcrs: &BTreeMap<u32, [u8; 32]>) -> Result<[u8; 32], T
     let mut h = Sha256::new();
     for idx in 0u32..=9 {
         let v = pcrs.get(&idx).ok_or_else(|| {
-            TpmVerifyError::Verify(format!("PCR {idx} required for boot aggregate but not reported"))
+            TpmVerifyError::Verify(format!(
+                "PCR {idx} required for boot aggregate but not reported"
+            ))
         })?;
         h.update(v);
     }
@@ -361,7 +367,7 @@ fn verify_quote_signature(
 
     match alg {
         TPM_ALG_ECDSA => verify_ecdsa_quote(spki, quote_msg, body)?,
-        TPM_ALG_RSASSA => verify_rsa_quote(spki, quote_msg, body)?,
+        TPM_ALG_RSASSA | TPM_ALG_RSAPSS => verify_rsa_quote(spki, quote_msg, alg, body)?,
         other => {
             return Err(TpmVerifyError::Verify(format!(
                 "unsupported TPM quote signature alg 0x{other:04x}"
@@ -371,28 +377,27 @@ fn verify_quote_signature(
     Ok(())
 }
 
-fn verify_ecdsa_quote(spki: &[u8], quote_msg: &[u8], sig_body: &[u8]) -> Result<(), TpmVerifyError> {
-    let (r, s) = parse_tpm_ecc_signature(sig_body)?;
-    let digest256 = Sha256::digest(quote_msg);
-    let digest384 = Sha384::digest(quote_msg);
+fn verify_ecdsa_quote(
+    spki: &[u8],
+    quote_msg: &[u8],
+    sig_body: &[u8],
+) -> Result<(), TpmVerifyError> {
+    let sig = parse_tpm_ecc_signature(sig_body)?;
+    let digest = digest_for_hash_alg(sig.hash_alg, quote_msg)?;
 
     if let Ok(vk) = P256Vk::from_sec1_bytes(spki) {
-        let mut raw = Vec::with_capacity(r.len() + s.len());
-        raw.extend_from_slice(&r);
-        raw.extend_from_slice(&s);
-        if let Ok(sig) = P256Sig::from_slice(&raw) {
-            if vk.verify(digest256.as_slice(), &sig).is_ok() {
-                return Ok(());
-            }
-        }
+        let raw = raw_ecdsa_signature(&sig.r, &sig.s, 32, "p256")?;
+        let sig = P256Sig::from_slice(&raw)
+            .map_err(|e| TpmVerifyError::Parse(format!("p256 sig: {e}")))?;
+        vk.verify_prehash(&digest, &sig)
+            .map_err(|e| TpmVerifyError::Verify(format!("p256 quote sig: {e}")))?;
+        return Ok(());
     }
     if let Ok(vk) = P384Vk::from_sec1_bytes(spki) {
-        let mut raw = Vec::with_capacity(r.len() + s.len());
-        raw.extend_from_slice(&r);
-        raw.extend_from_slice(&s);
+        let raw = raw_ecdsa_signature(&sig.r, &sig.s, 48, "p384")?;
         let sig = P384Sig::from_slice(&raw)
             .map_err(|e| TpmVerifyError::Parse(format!("p384 sig: {e}")))?;
-        vk.verify(digest384.as_slice(), &sig)
+        vk.verify_prehash(&digest, &sig)
             .map_err(|e| TpmVerifyError::Verify(format!("p384 quote sig: {e}")))?;
         return Ok(());
     }
@@ -401,26 +406,155 @@ fn verify_ecdsa_quote(spki: &[u8], quote_msg: &[u8], sig_body: &[u8]) -> Result<
     ))
 }
 
-fn verify_rsa_quote(spki: &[u8], quote_msg: &[u8], sig_body: &[u8]) -> Result<(), TpmVerifyError> {
+fn verify_rsa_quote(
+    spki: &[u8],
+    quote_msg: &[u8],
+    sig_alg: u16,
+    sig_body: &[u8],
+) -> Result<(), TpmVerifyError> {
     use rsa::pkcs1::DecodeRsaPublicKey;
-    use rsa::pss::{Signature, VerifyingKey};
-    use rsa::signature::Verifier as _;
+    use rsa::traits::SignatureScheme;
 
-    let sig_bytes = read_tpm2b(sig_body, 0)?.0;
+    let sig = parse_tpm_rsa_signature(sig_body)?;
+    let digest = digest_for_hash_alg(sig.hash_alg, quote_msg)?;
     let pk = rsa::RsaPublicKey::from_pkcs1_der(spki)
         .map_err(|e| TpmVerifyError::Parse(format!("rsa ak: {e}")))?;
-    let vk = VerifyingKey::<Sha256>::new(pk);
-    let sig = Signature::try_from(sig_bytes.as_slice())
-        .map_err(|e| TpmVerifyError::Parse(format!("rsa sig: {e}")))?;
-    vk.verify(quote_msg, &sig)
-        .map_err(|e| TpmVerifyError::Verify(format!("rsa quote sig: {e}")))?;
+
+    match sig_alg {
+        TPM_ALG_RSASSA => {
+            pkcs1v15_scheme(sig.hash_alg)?
+                .verify(&pk, &digest, &sig.sig)
+                .map_err(|e| TpmVerifyError::Verify(format!("rsa rsassa quote sig: {e}")))?;
+        }
+        TPM_ALG_RSAPSS => verify_rsapss_quote(pk, sig.hash_alg, &digest, &sig.sig)?,
+        _ => unreachable!("unsupported RSA signature algorithm was filtered by caller"),
+    }
     Ok(())
 }
 
-fn parse_tpm_ecc_signature(body: &[u8]) -> Result<(Vec<u8>, Vec<u8>), TpmVerifyError> {
-    let (r, off) = read_tpm2b(body, 0)?;
+fn verify_rsapss_quote(
+    pk: rsa::RsaPublicKey,
+    hash_alg: u16,
+    digest: &[u8],
+    sig_bytes: &[u8],
+) -> Result<(), TpmVerifyError> {
+    use rsa::pss::{Signature, VerifyingKey};
+
+    let sig = Signature::try_from(sig_bytes)
+        .map_err(|e| TpmVerifyError::Parse(format!("rsa pss sig: {e}")))?;
+    match hash_alg {
+        TPM_ALG_SHA256 => {
+            let vk = VerifyingKey::<Sha256>::new(pk);
+            vk.verify_prehash(digest, &sig)
+                .map_err(|e| TpmVerifyError::Verify(format!("rsa pss sha256 quote sig: {e}")))?;
+        }
+        TPM_ALG_SHA384 => {
+            let vk = VerifyingKey::<Sha384>::new(pk);
+            vk.verify_prehash(digest, &sig)
+                .map_err(|e| TpmVerifyError::Verify(format!("rsa pss sha384 quote sig: {e}")))?;
+        }
+        other => {
+            return Err(TpmVerifyError::Verify(format!(
+                "unsupported TPM quote hash alg 0x{other:04x}"
+            )))
+        }
+    }
+    Ok(())
+}
+
+struct TpmEccSignature {
+    hash_alg: u16,
+    r: Vec<u8>,
+    s: Vec<u8>,
+}
+
+struct TpmRsaSignature {
+    hash_alg: u16,
+    sig: Vec<u8>,
+}
+
+fn parse_tpm_ecc_signature(body: &[u8]) -> Result<TpmEccSignature, TpmVerifyError> {
+    let mut off = 0usize;
+    let hash_alg = read_u16(body, &mut off)?;
+    let (r, next) = read_tpm2b(body, off)?;
+    off = next;
     let (s, _) = read_tpm2b(body, off)?;
-    Ok((r, s))
+    Ok(TpmEccSignature { hash_alg, r, s })
+}
+
+fn parse_tpm_rsa_signature(body: &[u8]) -> Result<TpmRsaSignature, TpmVerifyError> {
+    let mut off = 0usize;
+    let hash_alg = read_u16(body, &mut off)?;
+    let (sig, _) = read_tpm2b(body, off)?;
+    Ok(TpmRsaSignature { hash_alg, sig })
+}
+
+fn digest_for_hash_alg(hash_alg: u16, msg: &[u8]) -> Result<Vec<u8>, TpmVerifyError> {
+    match hash_alg {
+        TPM_ALG_SHA256 => Ok(Sha256::digest(msg).to_vec()),
+        TPM_ALG_SHA384 => Ok(Sha384::digest(msg).to_vec()),
+        other => Err(TpmVerifyError::Verify(format!(
+            "unsupported TPM quote hash alg 0x{other:04x}"
+        ))),
+    }
+}
+
+fn raw_ecdsa_signature(
+    r: &[u8],
+    s: &[u8],
+    width: usize,
+    curve: &str,
+) -> Result<Vec<u8>, TpmVerifyError> {
+    let r = fixed_width_component(r, width, &format!("{curve} r"))?;
+    let s = fixed_width_component(s, width, &format!("{curve} s"))?;
+    let mut raw = Vec::with_capacity(width * 2);
+    raw.extend_from_slice(&r);
+    raw.extend_from_slice(&s);
+    Ok(raw)
+}
+
+fn fixed_width_component(v: &[u8], width: usize, field: &str) -> Result<Vec<u8>, TpmVerifyError> {
+    let mut significant = v;
+    if significant.len() > width {
+        let first_nonzero = significant
+            .iter()
+            .position(|b| *b != 0)
+            .unwrap_or(significant.len());
+        significant = &significant[first_nonzero..];
+    }
+    if significant.len() > width {
+        return Err(TpmVerifyError::Parse(format!(
+            "{field} is wider than {width} bytes"
+        )));
+    }
+    let mut out = vec![0u8; width];
+    out[width - significant.len()..].copy_from_slice(significant);
+    Ok(out)
+}
+
+fn pkcs1v15_scheme(hash_alg: u16) -> Result<rsa::Pkcs1v15Sign, TpmVerifyError> {
+    const SHA256_DIGESTINFO: &[u8] = &[
+        0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01,
+        0x05, 0x00, 0x04, 0x20,
+    ];
+    const SHA384_DIGESTINFO: &[u8] = &[
+        0x30, 0x41, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02,
+        0x05, 0x00, 0x04, 0x30,
+    ];
+
+    match hash_alg {
+        TPM_ALG_SHA256 => Ok(rsa::Pkcs1v15Sign {
+            hash_len: Some(32),
+            prefix: SHA256_DIGESTINFO.into(),
+        }),
+        TPM_ALG_SHA384 => Ok(rsa::Pkcs1v15Sign {
+            hash_len: Some(48),
+            prefix: SHA384_DIGESTINFO.into(),
+        }),
+        other => Err(TpmVerifyError::Verify(format!(
+            "unsupported TPM quote hash alg 0x{other:04x}"
+        ))),
+    }
 }
 
 fn read_tpm2b(buf: &[u8], mut off: usize) -> Result<(Vec<u8>, usize), TpmVerifyError> {
@@ -481,6 +615,13 @@ fn parse_hex(s: &str, field: &str) -> Result<Vec<u8>, TpmVerifyError> {
 mod tests {
     use super::*;
 
+    fn tpm2b(bytes: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(2 + bytes.len());
+        out.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
+        out.extend_from_slice(bytes);
+        out
+    }
+
     #[test]
     fn rejects_binding_mismatch() {
         let bundle = TpmClientBundle {
@@ -505,9 +646,13 @@ mod tests {
         // Two synthetic sha256 template hashes; PCR10 = H(H(0||t0)||t1).
         let t0 = [0xAAu8; 32];
         let t1 = [0xBBu8; 32];
-        let log = format!("10 {} ima-ng sha256:{} boot_aggregate\n10 {} ima-ng sha256:{} /usr/bin/agent\n",
-            hex::encode(t0), hex::encode([0u8; 32]),
-            hex::encode(t1), hex::encode([0u8; 32]));
+        let log = format!(
+            "10 {} ima-ng sha256:{} boot_aggregate\n10 {} ima-ng sha256:{} /usr/bin/agent\n",
+            hex::encode(t0),
+            hex::encode([0u8; 32]),
+            hex::encode(t1),
+            hex::encode([0u8; 32])
+        );
         let mut pcr = [0u8; 32];
         for t in [t0, t1] {
             let mut h = Sha256::new();
@@ -539,6 +684,49 @@ mod tests {
     }
 
     #[test]
+    fn parse_tpm_ecc_signature_consumes_hash_alg() {
+        let mut body = TPM_ALG_SHA256.to_be_bytes().to_vec();
+        body.extend_from_slice(&tpm2b(&[0x11; 32]));
+        body.extend_from_slice(&tpm2b(&[0x22; 32]));
+
+        let sig = parse_tpm_ecc_signature(&body).unwrap();
+
+        assert_eq!(sig.hash_alg, TPM_ALG_SHA256);
+        assert_eq!(sig.r, vec![0x11; 32]);
+        assert_eq!(sig.s, vec![0x22; 32]);
+    }
+
+    #[test]
+    fn parse_tpm_rsa_signature_consumes_hash_alg() {
+        let mut body = TPM_ALG_SHA384.to_be_bytes().to_vec();
+        body.extend_from_slice(&tpm2b(&[0xA5; 256]));
+
+        let sig = parse_tpm_rsa_signature(&body).unwrap();
+
+        assert_eq!(sig.hash_alg, TPM_ALG_SHA384);
+        assert_eq!(sig.sig, vec![0xA5; 256]);
+    }
+
+    #[test]
+    fn verify_ecdsa_quote_accepts_tpm_signature_with_hash_alg() {
+        use p256::ecdsa::signature::hazmat::PrehashSigner;
+        use p256::ecdsa::SigningKey;
+
+        let sk = SigningKey::from_bytes((&[7u8; 32]).into()).unwrap();
+        let quote_msg = b"synthetic TPMS_ATTEST bytes";
+        let digest = Sha256::digest(quote_msg);
+        let signature: P256Sig = sk.sign_prehash(&digest).unwrap();
+        let raw = signature.to_bytes();
+
+        let mut body = TPM_ALG_SHA256.to_be_bytes().to_vec();
+        body.extend_from_slice(&tpm2b(&raw[..32]));
+        body.extend_from_slice(&tpm2b(&raw[32..]));
+
+        let public_key = sk.verifying_key().to_encoded_point(false);
+        verify_ecdsa_quote(public_key.as_bytes(), quote_msg, &body).unwrap();
+    }
+
+    #[test]
     fn rejects_partial_ima_mode() {
         // pcrs present but ima_log empty -> rejected before crypto.
         let bundle = TpmClientBundle {
@@ -551,7 +739,10 @@ mod tests {
             quote_sig: String::new(),
             qualifying_data: hex::encode([7u8; 32]),
             pcr_bank: "sha256".into(),
-            pcrs: vec![PcrValue { index: 10, value: hex::encode([0u8; 32]) }],
+            pcrs: vec![PcrValue {
+                index: 10,
+                value: hex::encode([0u8; 32]),
+            }],
             ima_log: String::new(),
         };
         // Fails earlier at quote parse (empty quote_msg) — the point is it does
