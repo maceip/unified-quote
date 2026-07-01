@@ -8,10 +8,10 @@
 //! It has no security value — the platform quote itself is public. The key
 //! exists solely so UnifiedQuote signature verification works in tests.
 
-use uq_runner::quote::verify::verify_unified_quote;
-use uq_runner::quote::{Platform, UnifiedQuote};
 use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha384};
+use uq_runner::quote::verify::verify_unified_quote;
+use uq_runner::quote::{Platform, UnifiedQuote};
 
 fn load_snp_test_data() -> (Vec<u8>, SigningKey) {
     let json_str =
@@ -36,29 +36,26 @@ fn test_snp_layer2_verification() {
 
     println!("SNP report size: {} bytes", snp_report.len());
 
-    let quote = UnifiedQuote::new(
-        Platform::SevSnp,
-        value_x,
-        snp_report,
-        nonce,
-        &signing_key,
-    );
+    let quote = UnifiedQuote::new(Platform::SevSnp, value_x, snp_report, nonce, &signing_key);
 
     // Full verification — our test data has no VCEK cert table,
     // so signature verification is incomplete (no cert to verify against).
     // pubkey binding and structural checks pass; crypto sig doesn't.
-    let result = verify_unified_quote(&quote, Some(&value_x)).expect("SNP verification should pass");
+    let result =
+        verify_unified_quote(&quote, Some(&value_x)).expect("SNP verification should pass");
 
     assert!(result.signature_valid); // Layer 1: ed25519 over UnifiedQuote
-    // platform_valid = false because we don't have VCEK certs in test data.
-    // This is the CORRECT behavior — we refuse to claim hardware authenticity
-    // without a verified signature chain.
+                                     // platform_valid = false because we don't have VCEK certs in test data.
+                                     // This is the CORRECT behavior — we refuse to claim hardware authenticity
+                                     // without a verified signature chain.
     assert!(!result.platform_valid, "should be false without VCEK certs");
     assert_eq!(result.platform, Platform::SevSnp);
     assert_eq!(result.value_x, value_x);
 
     // Verify that SIG_VERIFIED measurement reflects the actual state
-    let sig_verified = result.measurements.iter()
+    let sig_verified = result
+        .measurements
+        .iter()
         .find(|(k, _)| k == "SIG_VERIFIED")
         .map(|(_, v)| v[0])
         .unwrap_or(0);
@@ -68,7 +65,10 @@ fn test_snp_layer2_verification() {
     for (name, value) in &result.measurements {
         println!("  {}: {}", name, hex::encode(value));
     }
-    println!("  Platform valid: {} (expected false without VCEK)", result.platform_valid);
+    println!(
+        "  Platform valid: {} (expected false without VCEK)",
+        result.platform_valid
+    );
     println!("  Note: pubkey binding verified, signature verification requires VCEK cert");
     println!("=== STRUCTURAL CHECK PASSED ===");
 }
@@ -104,7 +104,10 @@ fn test_snp_and_nitro_same_value_x() {
     let r_nitro = verify_unified_quote(&q_nitro, Some(&value_x)).expect("Nitro verify");
 
     // SNP: no VCEK certs in test data, so platform_valid=false
-    assert!(!r_snp.platform_valid, "SNP needs VCEK for full verification");
+    assert!(
+        !r_snp.platform_valid,
+        "SNP needs VCEK for full verification"
+    );
     // Nitro: COSE signature + cert chain verified
     assert!(r_nitro.platform_valid);
 
@@ -117,10 +120,7 @@ fn test_snp_and_nitro_same_value_x() {
     assert_ne!(q_snp.platform_quote_hash, q_nitro.platform_quote_hash);
 
     println!("=== CROSS-PLATFORM HARMONIZATION (REAL DATA) ===");
-    println!(
-        "Value X (identical): {}",
-        hex::encode(value_x)
-    );
+    println!("Value X (identical): {}", hex::encode(value_x));
     println!(
         "SNP quote hash:   {}",
         hex::encode(q_snp.platform_quote_hash)
@@ -129,6 +129,9 @@ fn test_snp_and_nitro_same_value_x() {
         "Nitro quote hash: {}",
         hex::encode(q_nitro.platform_quote_hash)
     );
-    println!("Both Layer 2 verified: SNP={}, Nitro={}", r_snp.platform_valid, r_nitro.platform_valid);
+    println!(
+        "Both Layer 2 verified: SNP={}, Nitro={}",
+        r_snp.platform_valid, r_nitro.platform_valid
+    );
     println!("=== HARMONIZED ===");
 }

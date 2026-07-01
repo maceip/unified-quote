@@ -6,10 +6,10 @@
 //! SECURITY NOTE: signing_key in testdata is TEST-ONLY (pubkey hash baked into
 //! the TDX quote's REPORTDATA during capture). No security value.
 
-use uq_runner::quote::verify::verify_unified_quote;
-use uq_runner::quote::{Platform, UnifiedQuote};
 use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha384};
+use uq_runner::quote::verify::verify_unified_quote;
+use uq_runner::quote::{Platform, UnifiedQuote};
 
 fn load_tdx_test_data() -> (Vec<u8>, SigningKey) {
     let json_str =
@@ -34,15 +34,10 @@ fn test_tdx_layer2_verification() {
 
     println!("TDX quote size: {} bytes", tdx_quote.len());
 
-    let quote = UnifiedQuote::new(
-        Platform::Tdx,
-        value_x,
-        tdx_quote,
-        nonce,
-        &signing_key,
-    );
+    let quote = UnifiedQuote::new(Platform::Tdx, value_x, tdx_quote, nonce, &signing_key);
 
-    let result = verify_unified_quote(&quote, Some(&value_x)).expect("TDX verification should pass");
+    let result =
+        verify_unified_quote(&quote, Some(&value_x)).expect("TDX verification should pass");
 
     assert!(result.signature_valid);
     assert!(result.platform_valid);
@@ -62,8 +57,7 @@ fn test_all_three_platforms_same_value_x() {
     // The crown jewel: same Value X verified across Nitro, SNP, AND TDX
     let (tdx_quote, tdx_key) = load_tdx_test_data();
 
-    let snp_json =
-        std::fs::read_to_string("testdata/snp_attestation.json").expect("snp testdata");
+    let snp_json = std::fs::read_to_string("testdata/snp_attestation.json").expect("snp testdata");
     let snp_data: serde_json::Value = serde_json::from_str(&snp_json).unwrap();
     let snp_report = hex::decode(snp_data["attestation_report"].as_str().unwrap()).unwrap();
     let snp_sk: [u8; 32] = hex::decode(snp_data["signing_key"].as_str().unwrap())
@@ -100,8 +94,8 @@ fn test_all_three_platforms_same_value_x() {
     let r_snp = verify_unified_quote(&q_snp, Some(&value_x)).expect("SNP verify");
     let r_nitro = verify_unified_quote(&q_nitro, Some(&value_x)).expect("Nitro verify");
 
-    assert!(r_tdx.platform_valid);   // TDX: full DCAP chain verified
-    assert!(!r_snp.platform_valid);  // SNP: no VCEK certs in test data
+    assert!(r_tdx.platform_valid); // TDX: full DCAP chain verified
+    assert!(!r_snp.platform_valid); // SNP: no VCEK certs in test data
     assert!(r_nitro.platform_valid); // Nitro: COSE + cert chain verified
 
     // Different platforms, same X
@@ -116,9 +110,18 @@ fn test_all_three_platforms_same_value_x() {
 
     println!("=== THREE-PLATFORM HARMONIZATION (ALL REAL DATA) ===");
     println!("Value X (identical): {}", hex::encode(value_x));
-    println!("TDX quote hash:   {}", hex::encode(q_tdx.platform_quote_hash));
-    println!("SNP quote hash:   {}", hex::encode(q_snp.platform_quote_hash));
-    println!("Nitro quote hash: {}", hex::encode(q_nitro.platform_quote_hash));
+    println!(
+        "TDX quote hash:   {}",
+        hex::encode(q_tdx.platform_quote_hash)
+    );
+    println!(
+        "SNP quote hash:   {}",
+        hex::encode(q_snp.platform_quote_hash)
+    );
+    println!(
+        "Nitro quote hash: {}",
+        hex::encode(q_nitro.platform_quote_hash)
+    );
     println!(
         "Layer 2: TDX={} (full DCAP), SNP={} (no VCEK), Nitro={} (full COSE)",
         r_tdx.platform_valid, r_snp.platform_valid, r_nitro.platform_valid

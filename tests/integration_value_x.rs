@@ -3,8 +3,8 @@
 //! Downloads or uses a pre-existing runner installation to verify that
 //! compute_value_x produces a deterministic hash over the runner image.
 
-use uq_runner::quote::value_x::compute_value_x;
 use std::path::Path;
+use uq_runner::quote::value_x::compute_value_x;
 
 const RUNNER_DIR: &str = "/tmp/actions-runner";
 
@@ -12,7 +12,10 @@ const RUNNER_DIR: &str = "/tmp/actions-runner";
 fn test_value_x_on_real_runner() {
     let runner_path = Path::new(RUNNER_DIR);
     if !runner_path.exists() {
-        eprintln!("Skipping: {} not found. Download a runner first.", RUNNER_DIR);
+        eprintln!(
+            "Skipping: {} not found. Download a runner first.",
+            RUNNER_DIR
+        );
         return;
     }
 

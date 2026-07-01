@@ -13,10 +13,10 @@
 //! 5. Extract Value X — same value regardless of platform
 //! 6. Produce the on-chain compact form (~180 bytes)
 
-use uq_runner::quote::verify::{verify_unified_quote, VerifyError};
-use uq_runner::quote::{OnChainAttestation, Platform, UnifiedQuote};
 use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha256, Sha384};
+use uq_runner::quote::verify::{verify_unified_quote, VerifyError};
+use uq_runner::quote::{OnChainAttestation, Platform, UnifiedQuote};
 
 /// Load the real Nitro attestation data captured from hardware.
 fn load_nitro_test_data() -> (Vec<u8>, SigningKey) {
@@ -135,13 +135,19 @@ fn test_unified_quote_is_platform_agnostic() {
     assert_ne!(q_tdx.platform_quote_hash, q_snp.platform_quote_hash);
 
     println!("=== HARMONIZED ATTESTATION ===");
+    println!("Value X (same on all platforms): {}", hex::encode(value_x));
     println!(
-        "Value X (same on all platforms): {}",
-        hex::encode(value_x)
+        "Nitro quote hash: {}",
+        hex::encode(q_nitro.platform_quote_hash)
     );
-    println!("Nitro quote hash: {}", hex::encode(q_nitro.platform_quote_hash));
-    println!("TDX quote hash:   {}", hex::encode(q_tdx.platform_quote_hash));
-    println!("SNP quote hash:   {}", hex::encode(q_snp.platform_quote_hash));
+    println!(
+        "TDX quote hash:   {}",
+        hex::encode(q_tdx.platform_quote_hash)
+    );
+    println!(
+        "SNP quote hash:   {}",
+        hex::encode(q_snp.platform_quote_hash)
+    );
     println!("=== All verify: ✓ ===");
 }
 
@@ -190,12 +196,18 @@ fn test_nitro_layer2_verification() {
     let result = verify_unified_quote(&quote, Some(&value_x)).expect("verification should pass");
 
     assert!(result.signature_valid, "Layer 1: signature should be valid");
-    assert!(result.platform_valid, "Layer 2: platform quote should verify");
+    assert!(
+        result.platform_valid,
+        "Layer 2: platform quote should verify"
+    );
     assert_eq!(result.value_x, value_x);
     assert_eq!(result.platform, Platform::Nitro);
 
     // Should have extracted PCRs from the Nitro attestation doc
-    assert!(!result.measurements.is_empty(), "should have PCR measurements");
+    assert!(
+        !result.measurements.is_empty(),
+        "should have PCR measurements"
+    );
     println!("=== NITRO LAYER 2 VERIFICATION ===");
     for (name, value) in &result.measurements {
         println!("  {}: {}", name, hex::encode(value));

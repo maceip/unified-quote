@@ -27,8 +27,7 @@ use crate::quote::UnifiedQuote;
 /// Callback type: takes an optional verifier-provided nonce, returns a quote.
 /// If nonce is None, the prover generates one (self-attested, weaker).
 /// If nonce is Some, the verifier provided it (challenge-response, stronger).
-pub type RefreshFn =
-    Box<dyn Fn(Option<[u8; 32]>) -> Result<UnifiedQuote, String> + Send + Sync>;
+pub type RefreshFn = Box<dyn Fn(Option<[u8; 32]>) -> Result<UnifiedQuote, String> + Send + Sync>;
 
 pub struct AttestState {
     pub current_quote: RwLock<Option<UnifiedQuote>>,

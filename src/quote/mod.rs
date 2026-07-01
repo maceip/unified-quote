@@ -12,7 +12,7 @@ pub mod roots;
 pub mod value_x;
 pub mod verify;
 
-use ed25519_dalek::{Signature, SigningKey, Signer, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use serde_with::{hex::Hex, serde_as};
 use sha2::{Digest, Sha256};
@@ -105,7 +105,17 @@ impl UnifiedQuote {
         nonce: [u8; 32],
         signing_key: &SigningKey,
     ) -> Self {
-        Self::new_with_metadata(platform, value_x, platform_quote, nonce, signing_key, None, None, true, 0)
+        Self::new_with_metadata(
+            platform,
+            value_x,
+            platform_quote,
+            nonce,
+            signing_key,
+            None,
+            None,
+            true,
+            0,
+        )
     }
 
     /// Construct a UnifiedQuote with full metadata (build provenance, TCB, integrity).
@@ -127,13 +137,8 @@ impl UnifiedQuote {
             .expect("system clock before unix epoch")
             .as_secs();
 
-        let msg = Self::canonical_message(
-            platform,
-            &value_x,
-            &platform_quote_hash,
-            timestamp,
-            &nonce,
-        );
+        let msg =
+            Self::canonical_message(platform, &value_x, &platform_quote_hash, timestamp, &nonce);
 
         let signature: Signature = signing_key.sign(&msg);
         let pubkey: [u8; 32] = signing_key.verifying_key().to_bytes();

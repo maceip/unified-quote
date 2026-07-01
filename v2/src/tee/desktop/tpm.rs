@@ -13,8 +13,10 @@
 //!   the running binary is hardware-measured, not asserted. `ima_verified = true`.
 
 use std::collections::BTreeMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use der::Decode;
+use der::{Decode, Encode};
+use ed25519_dalek::{Signature as Ed25519Signature, Verifier as _};
 use p256::ecdsa::{
     signature::hazmat::PrehashVerifier, Signature as P256Sig, VerifyingKey as P256Vk,
 };
@@ -31,6 +33,7 @@ const TPM_ALG_SHA384: u16 = 0x000c;
 const TPM_ALG_ECDSA: u16 = 0x0018;
 const TPM_ALG_RSASSA: u16 = 0x0014;
 const TPM_ALG_RSAPSS: u16 = 0x0016;
+const ACTIVATION_TOKEN_DOMAIN: &[u8] = b"uq/desktop-tpm/activation-token/v1\0";
 
 /// A single TPM PCR value reported alongside the quote.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -38,6 +41,74 @@ pub struct PcrValue {
     pub index: u32,
     /// Hex-encoded PCR contents (32 bytes for the sha256 bank).
     pub value: String,
+}
+
+/// Verifier-side policy inputs for desktop TPM evidence.
+///
+/// These are intentionally not carried by the evidence bundle. EK roots and
+/// activation-token signers are operator trust anchors.
+#[derive(Debug, Clone, Default)]
+pub struct TpmVerifierOptions {
+    /// SHA-256 fingerprints of DER-encoded TPM manufacturer / privacy-CA roots.
+    pub ek_root_sha256: Vec<String>,
+    /// Ed25519 public keys allowed to sign credential-activation tokens.
+    pub activation_pubkeys: Vec<[u8; 32]>,
+    /// Unix time for token expiry checks. `None` uses the local clock.
+    pub now: Option<u64>,
+}
+
+/// Signed verifier token proving an online makecredential/activatecredential
+/// round completed for this EK and AK name.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct TpmActivationToken {
+    pub version: u32,
+    /// Unix seconds after which the activation proof is no longer accepted.
+    pub exp: u64,
+    /// Verifier freshness nonce, hex.
+    pub nonce: String,
+    /// The eat-pass channel binding this activation was issued for, hex.
+    pub binding: String,
+    /// SHA-256 of the DER EK certificate, hex.
+    pub ek_cert_sha256: String,
+    /// SHA-256 of the DER AK certificate, hex.
+    pub ak_cert_sha256: String,
+    /// TPM2B_NAME of the AK used in makecredential, hex.
+    pub ak_name: String,
+    /// SHA-256 of the secret recovered by `tpm2_activatecredential`, hex.
+    pub secret_sha256: String,
+    /// Ed25519 public key that signed this token, hex.
+    pub issuer_pubkey: String,
+    /// Ed25519 signature over `signed_bytes()`, hex.
+    pub sig: String,
+}
+
+impl TpmActivationToken {
+    fn signed_bytes(&self) -> Vec<u8> {
+        fn put_str(out: &mut Vec<u8>, s: &str) {
+            out.extend_from_slice(&(s.len() as u32).to_be_bytes());
+            out.extend_from_slice(s.as_bytes());
+        }
+
+        let mut out = Vec::new();
+        out.extend_from_slice(ACTIVATION_TOKEN_DOMAIN);
+        out.extend_from_slice(&self.version.to_be_bytes());
+        out.extend_from_slice(&self.exp.to_be_bytes());
+        put_str(&mut out, &self.nonce);
+        put_str(&mut out, &self.binding);
+        put_str(&mut out, &self.ek_cert_sha256);
+        put_str(&mut out, &self.ak_cert_sha256);
+        put_str(&mut out, &self.ak_name);
+        put_str(&mut out, &self.secret_sha256);
+        put_str(&mut out, &self.issuer_pubkey);
+        out
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct TpmCredentialActivation {
+    pub token: TpmActivationToken,
+    /// Secret bytes returned by `tpm2_activatecredential`, hex.
+    pub secret: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -51,6 +122,21 @@ pub struct TpmClientBundle {
     pub build_digest: String,
     /// Attestation Key certificate (hex DER).
     pub ak_cert: String,
+    /// Endorsement Key certificate (hex DER). Required for hardware-rooted TPM
+    /// verification.
+    #[serde(default)]
+    pub ek_cert: String,
+    /// Issuer chain for `ek_cert`, hex DER, ordered EK issuer -> root.
+    #[serde(default)]
+    pub ek_ca_chain: Vec<String>,
+    /// TPM2B_NAME of the AK that was credential-activated, hex.
+    #[serde(default)]
+    pub ak_name: String,
+    /// Proof that an online verifier ran makecredential/activatecredential for
+    /// this EK certificate and AK name. Required for hardware-rooted TPM
+    /// verification.
+    #[serde(default)]
+    pub credential_activation: Option<TpmCredentialActivation>,
     /// TPM2B_ATTEST (hex), including the leading size field.
     pub quote_msg: String,
     /// TPMT_SIGNATURE (hex).
@@ -82,6 +168,14 @@ pub enum TpmVerifyError {
 pub fn verify_bundle(
     bundle: &TpmClientBundle,
     expected_binding: &[u8; 32],
+) -> Result<DesktopVerdict, TpmVerifyError> {
+    verify_bundle_with_options(bundle, expected_binding, &TpmVerifierOptions::default())
+}
+
+pub fn verify_bundle_with_options(
+    bundle: &TpmClientBundle,
+    expected_binding: &[u8; 32],
+    options: &TpmVerifierOptions,
 ) -> Result<DesktopVerdict, TpmVerifyError> {
     if bundle.version != 1 {
         return Err(TpmVerifyError::Verify(format!(
@@ -126,6 +220,7 @@ pub fn verify_bundle(
     let ak = Certificate::from_der(&ak_der)
         .map_err(|e| TpmVerifyError::Parse(format!("ak_cert: {e}")))?;
     verify_quote_signature(&ak, &quote_msg, &quote_sig)?;
+    verify_hardware_root(bundle, &ak_der, expected_binding, options)?;
 
     // IMA mode is engaged when the client supplies a measurement log and PCRs.
     // Sending one without the other is rejected so a client cannot present a
@@ -184,6 +279,168 @@ pub fn verify_bundle(
         ima_verified,
         boot_aggregate,
     })
+}
+
+fn verify_hardware_root(
+    bundle: &TpmClientBundle,
+    ak_der: &[u8],
+    expected_binding: &[u8; 32],
+    options: &TpmVerifierOptions,
+) -> Result<(), TpmVerifyError> {
+    if options.ek_root_sha256.is_empty() {
+        return Err(TpmVerifyError::Verify(
+            "desktop TPM EK root fingerprints are not configured".into(),
+        ));
+    }
+    if options.activation_pubkeys.is_empty() {
+        return Err(TpmVerifyError::Verify(
+            "desktop TPM credential-activation signer keys are not configured".into(),
+        ));
+    }
+
+    let ek_der = parse_required_hex(&bundle.ek_cert, "ek_cert")?;
+    let ek_chain = decode_hex_chain(&bundle.ek_ca_chain, "ek_ca_chain")?;
+    verify_ek_chain(&ek_der, &ek_chain, &options.ek_root_sha256)?;
+    verify_activation_proof(bundle, &ek_der, ak_der, expected_binding, options)?;
+    Ok(())
+}
+
+fn verify_ek_chain(
+    ek_der: &[u8],
+    ca_chain: &[Vec<u8>],
+    pinned_roots: &[String],
+) -> Result<(), TpmVerifyError> {
+    if ca_chain.is_empty() {
+        return Err(TpmVerifyError::Verify(
+            "ek_ca_chain is required and must end at a pinned root".into(),
+        ));
+    }
+    Certificate::from_der(ek_der).map_err(|e| TpmVerifyError::Parse(format!("ek_cert: {e}")))?;
+
+    let mut subject = ek_der;
+    for (i, issuer) in ca_chain.iter().enumerate() {
+        if !verify_cert_sig(issuer, subject)? {
+            return Err(TpmVerifyError::Verify(format!(
+                "ek_ca_chain link {i} failed signature check"
+            )));
+        }
+        subject = issuer;
+    }
+
+    let root = ca_chain.last().expect("checked non-empty");
+    if !verify_cert_sig(root, root)? {
+        return Err(TpmVerifyError::Verify(
+            "ek_ca_chain root is not self-signed".into(),
+        ));
+    }
+    let root_fp = hex::encode(Sha256::digest(root));
+    if !pinned_roots
+        .iter()
+        .any(|fp| fp.trim().eq_ignore_ascii_case(&root_fp))
+    {
+        return Err(TpmVerifyError::Verify(
+            "ek_ca_chain root fingerprint is not pinned".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn verify_activation_proof(
+    bundle: &TpmClientBundle,
+    ek_der: &[u8],
+    ak_der: &[u8],
+    expected_binding: &[u8; 32],
+    options: &TpmVerifierOptions,
+) -> Result<(), TpmVerifyError> {
+    let activation = bundle
+        .credential_activation
+        .as_ref()
+        .ok_or_else(|| TpmVerifyError::Verify("credential_activation proof is required".into()))?;
+    let token = &activation.token;
+    if token.version != 1 {
+        return Err(TpmVerifyError::Verify(format!(
+            "unsupported credential_activation token version {}",
+            token.version
+        )));
+    }
+    let now = options.now.unwrap_or_else(unix_now);
+    if now > token.exp {
+        return Err(TpmVerifyError::Verify(
+            "credential_activation token expired".into(),
+        ));
+    }
+    if !token
+        .binding
+        .trim()
+        .eq_ignore_ascii_case(&hex::encode(expected_binding))
+    {
+        return Err(TpmVerifyError::Verify(
+            "credential_activation token binding mismatch".into(),
+        ));
+    }
+    if !token
+        .ek_cert_sha256
+        .trim()
+        .eq_ignore_ascii_case(&hex::encode(Sha256::digest(ek_der)))
+    {
+        return Err(TpmVerifyError::Verify(
+            "credential_activation token EK certificate mismatch".into(),
+        ));
+    }
+    if !token
+        .ak_cert_sha256
+        .trim()
+        .eq_ignore_ascii_case(&hex::encode(Sha256::digest(ak_der)))
+    {
+        return Err(TpmVerifyError::Verify(
+            "credential_activation token AK certificate mismatch".into(),
+        ));
+    }
+    if bundle.ak_name.trim().is_empty()
+        || !token
+            .ak_name
+            .trim()
+            .eq_ignore_ascii_case(bundle.ak_name.trim())
+    {
+        return Err(TpmVerifyError::Verify(
+            "credential_activation token AK name mismatch".into(),
+        ));
+    }
+
+    let secret = parse_required_hex(&activation.secret, "credential_activation.secret")?;
+    if !token
+        .secret_sha256
+        .trim()
+        .eq_ignore_ascii_case(&hex::encode(Sha256::digest(&secret)))
+    {
+        return Err(TpmVerifyError::Verify(
+            "credential_activation secret does not match token".into(),
+        ));
+    }
+
+    let issuer_pubkey = parse_hex32(&token.issuer_pubkey, "credential_activation.issuer_pubkey")?;
+    if !options
+        .activation_pubkeys
+        .iter()
+        .any(|pk| pk == &issuer_pubkey)
+    {
+        return Err(TpmVerifyError::Verify(
+            "credential_activation issuer is not trusted".into(),
+        ));
+    }
+    let vk = ed25519_dalek::VerifyingKey::from_bytes(&issuer_pubkey)
+        .map_err(|e| TpmVerifyError::Parse(format!("activation issuer pubkey: {e}")))?;
+    let sig_bytes = parse_required_hex(&token.sig, "credential_activation.sig")?;
+    let sig_array: [u8; 64] = sig_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| TpmVerifyError::Parse("credential_activation.sig must be 64 bytes".into()))?;
+    let sig = Ed25519Signature::from_bytes(&sig_array);
+    vk.verify(&token.signed_bytes(), &sig).map_err(|e| {
+        TpmVerifyError::Verify(format!("credential_activation token signature: {e}"))
+    })?;
+
+    Ok(())
 }
 
 /// Parsed, hardware-signed contents of a TPM quote we care about.
@@ -557,6 +814,118 @@ fn pkcs1v15_scheme(hash_alg: u16) -> Result<rsa::Pkcs1v15Sign, TpmVerifyError> {
     }
 }
 
+fn verify_cert_sig(issuer_der: &[u8], subject_der: &[u8]) -> Result<bool, TpmVerifyError> {
+    let issuer = Certificate::from_der(issuer_der)
+        .map_err(|e| TpmVerifyError::Parse(format!("issuer cert: {e}")))?;
+    let subject = Certificate::from_der(subject_der)
+        .map_err(|e| TpmVerifyError::Parse(format!("subject cert: {e}")))?;
+    let issuer_pk = issuer
+        .tbs_certificate
+        .subject_public_key_info
+        .subject_public_key
+        .raw_bytes();
+    let tbs_der = subject
+        .tbs_certificate
+        .to_der()
+        .map_err(|e| TpmVerifyError::Parse(format!("subject tbs: {e}")))?;
+    let sig_bytes = subject.signature.raw_bytes();
+    let sig_alg = subject.signature_algorithm.oid.to_string();
+
+    match sig_alg.as_str() {
+        // ecdsa-with-SHA256
+        "1.2.840.10045.4.3.2" => verify_cert_ecdsa_p256(issuer_pk, &tbs_der, sig_bytes),
+        // ecdsa-with-SHA384
+        "1.2.840.10045.4.3.3" => verify_cert_ecdsa_p384(issuer_pk, &tbs_der, sig_bytes),
+        // sha256WithRSAEncryption
+        "1.2.840.113549.1.1.11" => {
+            verify_cert_rsa_pkcs1(issuer_pk, TPM_ALG_SHA256, &tbs_der, sig_bytes)
+        }
+        // sha384WithRSAEncryption
+        "1.2.840.113549.1.1.12" => {
+            verify_cert_rsa_pkcs1(issuer_pk, TPM_ALG_SHA384, &tbs_der, sig_bytes)
+        }
+        // rsassaPss. TPM vendor certs commonly use SHA-256 or SHA-384; this
+        // parser does not inspect the ASN.1 PSS params yet, so try both hash
+        // profiles and accept only a real signature match.
+        "1.2.840.113549.1.1.10" => {
+            verify_cert_rsa_pss(issuer_pk, &tbs_der, sig_bytes, TPM_ALG_SHA256)
+                .or_else(|_| verify_cert_rsa_pss(issuer_pk, &tbs_der, sig_bytes, TPM_ALG_SHA384))
+        }
+        other => Err(TpmVerifyError::Verify(format!(
+            "unsupported cert signature algorithm OID {other}"
+        ))),
+    }
+}
+
+fn verify_cert_ecdsa_p256(
+    issuer_pk: &[u8],
+    tbs_der: &[u8],
+    sig_bytes: &[u8],
+) -> Result<bool, TpmVerifyError> {
+    let vk = P256Vk::from_sec1_bytes(issuer_pk)
+        .map_err(|e| TpmVerifyError::Parse(format!("issuer P-256 key: {e}")))?;
+    let sig = p256::ecdsa::DerSignature::from_bytes(sig_bytes)
+        .map_err(|e| TpmVerifyError::Parse(format!("cert sig: {e}")))?;
+    let digest = Sha256::digest(tbs_der);
+    Ok(vk.verify_prehash(&digest, &sig).is_ok())
+}
+
+fn verify_cert_ecdsa_p384(
+    issuer_pk: &[u8],
+    tbs_der: &[u8],
+    sig_bytes: &[u8],
+) -> Result<bool, TpmVerifyError> {
+    let vk = P384Vk::from_sec1_bytes(issuer_pk)
+        .map_err(|e| TpmVerifyError::Parse(format!("issuer P-384 key: {e}")))?;
+    let sig = p384::ecdsa::DerSignature::from_bytes(sig_bytes)
+        .map_err(|e| TpmVerifyError::Parse(format!("cert sig: {e}")))?;
+    let digest = Sha384::digest(tbs_der);
+    Ok(vk.verify_prehash(&digest, &sig).is_ok())
+}
+
+fn verify_cert_rsa_pkcs1(
+    issuer_pk: &[u8],
+    hash_alg: u16,
+    tbs_der: &[u8],
+    sig_bytes: &[u8],
+) -> Result<bool, TpmVerifyError> {
+    use rsa::pkcs1::DecodeRsaPublicKey;
+    use rsa::traits::SignatureScheme;
+
+    let pk = rsa::RsaPublicKey::from_pkcs1_der(issuer_pk)
+        .map_err(|e| TpmVerifyError::Parse(format!("issuer RSA key: {e}")))?;
+    let digest = digest_for_hash_alg(hash_alg, tbs_der)?;
+    Ok(pkcs1v15_scheme(hash_alg)?
+        .verify(&pk, &digest, sig_bytes)
+        .is_ok())
+}
+
+fn verify_cert_rsa_pss(
+    issuer_pk: &[u8],
+    tbs_der: &[u8],
+    sig_bytes: &[u8],
+    hash_alg: u16,
+) -> Result<bool, TpmVerifyError> {
+    use rsa::pkcs1::DecodeRsaPublicKey;
+    use rsa::pss::{Signature, VerifyingKey};
+
+    let pk = rsa::RsaPublicKey::from_pkcs1_der(issuer_pk)
+        .map_err(|e| TpmVerifyError::Parse(format!("issuer RSA key: {e}")))?;
+    let sig = Signature::try_from(sig_bytes)
+        .map_err(|e| TpmVerifyError::Parse(format!("rsa pss cert sig: {e}")))?;
+    match hash_alg {
+        TPM_ALG_SHA256 => {
+            let vk = VerifyingKey::<Sha256>::new(pk);
+            Ok(vk.verify_prehash(&Sha256::digest(tbs_der), &sig).is_ok())
+        }
+        TPM_ALG_SHA384 => {
+            let vk = VerifyingKey::<Sha384>::new(pk);
+            Ok(vk.verify_prehash(&Sha384::digest(tbs_der), &sig).is_ok())
+        }
+        _ => unreachable!("unsupported hash alg passed by caller"),
+    }
+}
+
 fn read_tpm2b(buf: &[u8], mut off: usize) -> Result<(Vec<u8>, usize), TpmVerifyError> {
     if off + 2 > buf.len() {
         return Err(TpmVerifyError::Parse("truncated TPM2B".into()));
@@ -611,6 +980,28 @@ fn parse_hex(s: &str, field: &str) -> Result<Vec<u8>, TpmVerifyError> {
     hex::decode(s.trim()).map_err(|e| TpmVerifyError::Parse(format!("{field}: {e}")))
 }
 
+fn parse_required_hex(s: &str, field: &str) -> Result<Vec<u8>, TpmVerifyError> {
+    if s.trim().is_empty() {
+        return Err(TpmVerifyError::Verify(format!("{field} is required")));
+    }
+    parse_hex(s, field)
+}
+
+fn decode_hex_chain(hex_certs: &[String], field: &str) -> Result<Vec<Vec<u8>>, TpmVerifyError> {
+    hex_certs
+        .iter()
+        .enumerate()
+        .map(|(i, h)| parse_required_hex(h, &format!("{field}[{i}]")))
+        .collect()
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -630,6 +1021,10 @@ mod tests {
             binding: hex::encode([1u8; 32]),
             build_digest: hex::encode([0u8; 32]),
             ak_cert: String::new(),
+            ek_cert: String::new(),
+            ek_ca_chain: Vec::new(),
+            ak_name: String::new(),
+            credential_activation: None,
             quote_msg: String::new(),
             quote_sig: String::new(),
             qualifying_data: hex::encode([1u8; 32]),
@@ -727,6 +1122,61 @@ mod tests {
     }
 
     #[test]
+    fn verifies_signed_activation_token() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let sk = SigningKey::from_bytes(&[3u8; 32]);
+        let issuer_pubkey = sk.verifying_key().to_bytes();
+        let binding = [9u8; 32];
+        let ek_der = b"synthetic ek cert der";
+        let ak_der = b"synthetic ak cert der";
+        let secret = b"activated secret";
+        let ak_name = "000b".to_string() + &hex::encode([0xA5u8; 32]);
+
+        let mut token = TpmActivationToken {
+            version: 1,
+            exp: 2_000,
+            nonce: hex::encode([0x11u8; 32]),
+            binding: hex::encode(binding),
+            ek_cert_sha256: hex::encode(Sha256::digest(ek_der)),
+            ak_cert_sha256: hex::encode(Sha256::digest(ak_der)),
+            ak_name: ak_name.clone(),
+            secret_sha256: hex::encode(Sha256::digest(secret)),
+            issuer_pubkey: hex::encode(issuer_pubkey),
+            sig: String::new(),
+        };
+        token.sig = hex::encode(sk.sign(&token.signed_bytes()).to_bytes());
+
+        let bundle = TpmClientBundle {
+            version: 1,
+            platform: LINUX_TPM_PLATFORM.into(),
+            binding: hex::encode(binding),
+            build_digest: hex::encode([0u8; 32]),
+            ak_cert: hex::encode(ak_der),
+            ek_cert: hex::encode(ek_der),
+            ek_ca_chain: Vec::new(),
+            ak_name,
+            credential_activation: Some(TpmCredentialActivation {
+                token,
+                secret: hex::encode(secret),
+            }),
+            quote_msg: String::new(),
+            quote_sig: String::new(),
+            qualifying_data: hex::encode(binding),
+            pcr_bank: String::new(),
+            pcrs: Vec::new(),
+            ima_log: String::new(),
+        };
+        let options = TpmVerifierOptions {
+            ek_root_sha256: Vec::new(),
+            activation_pubkeys: vec![issuer_pubkey],
+            now: Some(1_000),
+        };
+
+        verify_activation_proof(&bundle, ek_der, ak_der, &binding, &options).unwrap();
+    }
+
+    #[test]
     fn rejects_partial_ima_mode() {
         // pcrs present but ima_log empty -> rejected before crypto.
         let bundle = TpmClientBundle {
@@ -735,6 +1185,10 @@ mod tests {
             binding: hex::encode([7u8; 32]),
             build_digest: hex::encode([0u8; 32]),
             ak_cert: String::new(),
+            ek_cert: String::new(),
+            ek_ca_chain: Vec::new(),
+            ak_name: String::new(),
+            credential_activation: None,
             quote_msg: String::new(),
             quote_sig: String::new(),
             qualifying_data: hex::encode([7u8; 32]),

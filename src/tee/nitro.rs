@@ -64,8 +64,7 @@ impl TeeProvider for NitroProvider {
             public_key: Some(ByteBuf::from(report_data.to_vec())),
         };
 
-        let response =
-            aws_nitro_enclaves_nsm_api::driver::nsm_process_request(self.fd, request);
+        let response = aws_nitro_enclaves_nsm_api::driver::nsm_process_request(self.fd, request);
 
         match response {
             Response::Attestation { document } => Ok(TeeEvidence {

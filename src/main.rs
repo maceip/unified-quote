@@ -29,7 +29,7 @@ use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
 
-use quote::{UnifiedQuote, value_x};
+use quote::{value_x, UnifiedQuote};
 use tee::detect::detect_tee;
 
 /// Default port for the attestation endpoint.
@@ -75,10 +75,7 @@ async fn main() -> anyhow::Result<()> {
     // the same pubkey. For the prototype, we generate a fresh key.
     let signing_key = SigningKey::generate(&mut OsRng);
     let pubkey_bytes = signing_key.verifying_key().to_bytes();
-    eprintln!(
-        "[uq] TEE signing pubkey = {}",
-        hex::encode(pubkey_bytes)
-    );
+    eprintln!("[uq] TEE signing pubkey = {}", hex::encode(pubkey_bytes));
 
     // --- Step 4: Bind value_x + pubkey into TEE report_data ---
     // report_data layout (64 bytes):
@@ -144,9 +141,7 @@ async fn main() -> anyhow::Result<()> {
             rd[..32].copy_from_slice(&bh);
             rd[32..64].copy_from_slice(&value_x_clone[..32]);
 
-            let evidence = provider
-                .collect_evidence(&rd)
-                .map_err(|e| e.to_string())?;
+            let evidence = provider.collect_evidence(&rd).map_err(|e| e.to_string())?;
 
             // Use verifier's challenge nonce if provided, otherwise generate one.
             // A verifier-provided nonce proves freshness (challenge-response).
