@@ -78,6 +78,8 @@ pub fn verify_bundle(
         verdict: "verified".into(),
         platform: MACOS_APP_ATTEST_PLATFORM.into(),
         identity_hash: bundle.app_id_hash.clone(),
+        ima_verified: false,
+        boot_aggregate: None,
     })
 }
 
