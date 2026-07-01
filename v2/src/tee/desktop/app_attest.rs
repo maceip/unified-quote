@@ -94,11 +94,7 @@ fn parse_assertion(b64: &str) -> Result<(Vec<u8>, Vec<u8>), MacOsVerifyError> {
         .map_err(|e| MacOsVerifyError::Parse(format!("assertion cbor: {e}")))?;
     let map = match val {
         Value::Map(m) => m,
-        _ => {
-            return Err(MacOsVerifyError::Parse(
-                "assertion must be CBOR map".into(),
-            ))
-        }
+        _ => return Err(MacOsVerifyError::Parse("assertion must be CBOR map".into())),
     };
     let mut auth_data = None;
     let mut signature = None;
@@ -132,7 +128,8 @@ fn bytes_from_value(v: ciborium::Value) -> Option<Vec<u8>> {
 
 fn parse_uncompressed_p256(hex: &str) -> Result<p256::ecdsa::VerifyingKey, MacOsVerifyError> {
     use p256::ecdsa::VerifyingKey;
-    let raw = hex::decode(hex.trim()).map_err(|e| MacOsVerifyError::Parse(format!("pubkey: {e}")))?;
+    let raw =
+        hex::decode(hex.trim()).map_err(|e| MacOsVerifyError::Parse(format!("pubkey: {e}")))?;
     VerifyingKey::from_sec1_bytes(&raw)
         .map_err(|e| MacOsVerifyError::Parse(format!("p256 pubkey: {e}")))
 }

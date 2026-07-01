@@ -6,19 +6,19 @@
 
 #[cfg(feature = "sev-snp")]
 pub mod azure;
+#[cfg(feature = "desktop")]
+pub mod desktop;
 pub mod detect;
 #[cfg(feature = "sev-snp")]
 pub mod kds;
+#[cfg(feature = "mobile")]
+pub mod mobile;
 #[cfg(all(feature = "nitro", unix))]
 pub mod nitro;
 #[cfg(all(feature = "sev-snp", unix))]
 pub mod snp;
 #[cfg(all(feature = "tdx", unix))]
 pub mod tdx;
-#[cfg(feature = "desktop")]
-pub mod desktop;
-#[cfg(feature = "mobile")]
-pub mod mobile;
 pub mod tpm;
 
 use crate::quote::Platform;

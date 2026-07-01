@@ -95,11 +95,7 @@ fn parse_assertion(b64: &str) -> Result<(Vec<u8>, Vec<u8>), IosVerifyError> {
         .map_err(|e| IosVerifyError::Parse(format!("assertion cbor: {e}")))?;
     let map = match val {
         Value::Map(m) => m,
-        _ => {
-            return Err(IosVerifyError::Parse(
-                "assertion must be CBOR map".into(),
-            ))
-        }
+        _ => return Err(IosVerifyError::Parse("assertion must be CBOR map".into())),
     };
     let mut auth_data = None;
     let mut signature = None;

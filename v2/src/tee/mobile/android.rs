@@ -79,10 +79,7 @@ pub fn verify_bundle(
             "attestation extension does not contain binding as attestationChallenge".into(),
         ));
     }
-    if !ext_bytes
-        .windows(32)
-        .any(|w| w == cert_digest)
-    {
+    if !ext_bytes.windows(32).any(|w| w == cert_digest) {
         return Err(AndroidVerifyError::Verify(
             "attestation extension does not contain signing_cert_digest".into(),
         ));
@@ -197,7 +194,8 @@ fn verify_cert_sig(issuer_der: &[u8], subject_der: &[u8]) -> Result<bool, Androi
 }
 
 fn parse_hex32(s: &str, field: &str) -> Result<[u8; 32], AndroidVerifyError> {
-    let v = hex::decode(s.trim()).map_err(|e| AndroidVerifyError::Parse(format!("{field}: {e}")))?;
+    let v =
+        hex::decode(s.trim()).map_err(|e| AndroidVerifyError::Parse(format!("{field}: {e}")))?;
     v.as_slice()
         .try_into()
         .map_err(|_| AndroidVerifyError::Parse(format!("{field} must be 32 bytes")))
