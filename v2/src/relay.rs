@@ -249,6 +249,7 @@ pub struct VerifiedDeviceAttestation {
 }
 
 impl VerifiedDeviceAttestation {
+    #[cfg(feature = "desktop")]
     pub fn from_desktop_tpm(
         bundle: &crate::tee::desktop::tpm::TpmClientBundle,
         expected_binding: &[u8; 32],
@@ -272,6 +273,7 @@ impl VerifiedDeviceAttestation {
         })
     }
 
+    #[cfg(feature = "desktop")]
     pub fn from_macos_app_attest(
         bundle: &crate::tee::desktop::app_attest::MacOsAppAttestBundle,
         expected_binding: &[u8; 32],
