@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-07-01T13:50:50Z",
+  "updated_at": "2026-07-01T14:00:15Z",
   "generator": "report-live-quotes.yml",
   "schema": 1,
   "nodes": [
@@ -20,7 +20,7 @@
       "spki_binding": "PASS",
       "quote_signature": "PASS",
       "chain": "PASS (2 stage(s) walked)",
-      "checked_at": "2026-07-01T13:50:49Z",
+      "checked_at": "2026-07-01T14:00:14Z",
       "detail": "quote re-verified against pinned vendor root"
     },
     {
@@ -41,7 +41,7 @@
       "spki_binding": "PASS",
       "quote_signature": "PASS",
       "chain": "leaf only (no previous stage)",
-      "checked_at": "2026-07-01T13:50:49Z",
+      "checked_at": "2026-07-01T14:00:14Z",
       "detail": "quote re-verified against pinned vendor root"
     },
     {
@@ -52,15 +52,15 @@
       "platform": "SevSnp",
       "endpoint": "https://attest.secure.build:8443/",
       "verdict": "verified",
-      "value_x": "9ad82f00c05fd1da7acfe60770bec3a1d2c8e97300bb7bf5889c34d669e5958a",
-      "value_x_short": "9ad82f00c05fd1da",
+      "value_x": "9810702693eb776738c7592eafa10dda8a9649786670b1b8618a445643b79788",
+      "value_x_short": "9810702693eb7767",
       "measurements": {
         "MEASUREMENT": "41f77fe5c1416343f84dbeeded504eb4a2c450861317ed3e4e46cd771c79243a4cbeb3d75ec663e6a7a47bd1f4fab503"
       },
       "spki_binding": "report_data \u2192 vTPM AK \u2192 AK quote binds value_x",
       "quote_signature": "verified",
       "chain": "vTPM HCL \u2192 SNP report \u2192 VCEK \u2192 ASK \u2192 ARK-Milan (pinned)",
-      "checked_at": "2026-07-01T13:50:50Z",
+      "checked_at": "2026-07-01T14:00:15Z",
       "detail": "vTPM SNP re-verified against the AMD root; value_x bound via AK quote (GitHub build provenance \u2192 silicon)",
       "value_x_bound": true
     },
