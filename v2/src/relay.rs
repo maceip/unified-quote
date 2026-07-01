@@ -29,6 +29,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 const CRED_DOMAIN: &[u8] = b"uq/relay/credential\0";
+const CHALLENGE_DOMAIN: &[u8] = b"uq/relay/challenge\0";
 const BIND_DOMAIN: &[u8] = b"uq/relay/device-binding\0";
 const POP_DOMAIN: &[u8] = b"uq/relay/proof-of-possession\0";
 
@@ -42,6 +43,10 @@ pub enum RelayError {
     DeviceBindingMismatch,
     #[error("bootstrap nonce replay")]
     BootstrapReplay,
+    #[error("presentation challenge replay")]
+    PresentationReplay,
+    #[error("challenge expired")]
+    ChallengeExpired,
     #[error("credential time overflow")]
     TimeOverflow,
     #[error("issuer signature verification failed")]
@@ -52,19 +57,71 @@ pub enum RelayError {
     NotYetValid,
     #[error("proof-of-possession failed")]
     ProofOfPossession,
+    #[error("tee attestation verification failed: {0}")]
+    TeeAttestation(String),
+    #[error("device attestation verification failed: {0}")]
+    DeviceAttestation(String),
+}
+
+/// A verifier-issued one-time challenge. The nonce gives replay identity; the
+/// expiry bounds how long the attestation or presentation may be accepted; the
+/// context lets a service bind the challenge to a route, audience, session, or
+/// relay issuer key.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RelayChallenge {
+    pub nonce: [u8; 32],
+    pub expires_at: u64,
+    #[serde(default)]
+    pub context: Vec<u8>,
+}
+
+impl RelayChallenge {
+    pub fn new(
+        nonce: [u8; 32],
+        now: u64,
+        ttl_secs: u64,
+        context: impl Into<Vec<u8>>,
+    ) -> Result<Self, RelayError> {
+        let expires_at = now.checked_add(ttl_secs).ok_or(RelayError::TimeOverflow)?;
+        Ok(Self {
+            nonce,
+            expires_at,
+            context: context.into(),
+        })
+    }
+
+    pub fn ensure_fresh(&self, now: u64) -> Result<(), RelayError> {
+        if now > self.expires_at {
+            return Err(RelayError::ChallengeExpired);
+        }
+        Ok(())
+    }
+
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(CHALLENGE_DOMAIN);
+        b.extend_from_slice(&self.nonce);
+        b.extend_from_slice(&self.expires_at.to_be_bytes());
+        put_field(&mut b, &self.context);
+        b
+    }
 }
 
 /// The 32-byte value a device's attestation must commit to (in TPM
 /// `qualifyingData` / App Attest client-data) so the resulting credential is
-/// bound to exactly this device key and this cloud TEE. A fresh `nonce` makes
-/// each bootstrap non-replayable.
-pub fn device_binding(device_pubkey: &[u8; 32], tee_value_x: &[u8], nonce: &[u8; 32]) -> [u8; 32] {
+/// bound to exactly this device key, this cloud TEE, and this one-time relay
+/// challenge.
+pub fn device_binding(
+    device_pubkey: &[u8; 32],
+    tee_value_x: &[u8],
+    challenge: &RelayChallenge,
+) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update(BIND_DOMAIN);
     h.update(device_pubkey);
     h.update((tee_value_x.len() as u32).to_be_bytes());
     h.update(tee_value_x);
-    h.update(nonce);
+    h.update(challenge.canonical_bytes());
     h.finalize().into()
 }
 
@@ -120,20 +177,19 @@ impl RelayCredential {
         vk_from_slice(&self.device_pubkey)
     }
 
-    /// Verify a full presentation: the credential is valid AND the holder proved
-    /// possession of the device key over `challenge`. This is the cheap hot-path
-    /// check a relying party runs instead of a fresh attestation.
-    pub fn verify_presentation(
+    /// Verify the holder-of-key signature over an already freshness-checked
+    /// challenge message.
+    fn verify_presentation(
         &self,
         issuer: &VerifyingKey,
-        challenge: &[u8],
+        challenge_message: &[u8],
         pop: &Presentation,
         now: u64,
     ) -> Result<(), RelayError> {
         let device_vk = self.verify(issuer, now)?;
         let pop_sig = sig_from_slice(&pop.sig)?;
         device_vk
-            .verify(&pop_message(challenge), &pop_sig)
+            .verify(&pop_message(challenge_message), &pop_sig)
             .map_err(|_| RelayError::ProofOfPossession)
     }
 }
@@ -157,12 +213,101 @@ pub struct AcceptedRelayClaims {
     pub device_pubkey: VerifyingKey,
 }
 
+/// Relay TEE identity after verifying the relay's own unified-quote EAT.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedRelayTee {
+    value_x: Vec<u8>,
+}
+
+impl VerifiedRelayTee {
+    pub fn from_eat(eat_cbor: &[u8]) -> Result<Self, RelayError> {
+        let token = crate::eat::EatToken::from_cbor(eat_cbor)
+            .map_err(|e| RelayError::TeeAttestation(format!("EAT decode: {e}")))?;
+        let platform = token.platform_enum().ok_or_else(|| {
+            RelayError::TeeAttestation(format!("unknown platform {}", token.platform))
+        })?;
+        let expected = token.binding_bytes();
+        crate::quote::verify::verify_platform_quote(platform, &token.platform_quote, &expected)
+            .map_err(|e| RelayError::TeeAttestation(format!("platform quote: {e}")))?;
+        Ok(Self {
+            value_x: token.value_x.to_vec(),
+        })
+    }
+
+    pub fn value_x(&self) -> &[u8] {
+        &self.value_x
+    }
+}
+
+/// Device identity after verifying a device attestation against the relay
+/// device-binding challenge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedDeviceAttestation {
+    platform: String,
+    value_x: Vec<u8>,
+    observed_binding: [u8; 32],
+}
+
+impl VerifiedDeviceAttestation {
+    pub fn from_desktop_tpm(
+        bundle: &crate::tee::desktop::tpm::TpmClientBundle,
+        expected_binding: &[u8; 32],
+        options: &crate::tee::desktop::tpm::TpmVerifierOptions,
+    ) -> Result<Self, RelayError> {
+        let verdict =
+            crate::tee::desktop::tpm::verify_bundle_with_options(bundle, expected_binding, options)
+                .map_err(|e| RelayError::DeviceAttestation(format!("desktop TPM: {e}")))?;
+        if verdict.verdict != "verified" {
+            return Err(RelayError::DeviceAttestation(format!(
+                "desktop TPM verdict: {}",
+                verdict.verdict
+            )));
+        }
+        let value_x = hex::decode(&verdict.identity_hash)
+            .map_err(|e| RelayError::DeviceAttestation(format!("identity_hash: {e}")))?;
+        Ok(Self {
+            platform: verdict.platform,
+            value_x,
+            observed_binding: *expected_binding,
+        })
+    }
+
+    pub fn from_macos_app_attest(
+        bundle: &crate::tee::desktop::app_attest::MacOsAppAttestBundle,
+        expected_binding: &[u8; 32],
+    ) -> Result<Self, RelayError> {
+        let verdict = crate::tee::desktop::app_attest::verify_bundle(bundle, expected_binding)
+            .map_err(|e| RelayError::DeviceAttestation(format!("macOS App Attest: {e}")))?;
+        if verdict.verdict != "verified" {
+            return Err(RelayError::DeviceAttestation(format!(
+                "macOS App Attest verdict: {}",
+                verdict.verdict
+            )));
+        }
+        let value_x = hex::decode(&verdict.identity_hash)
+            .map_err(|e| RelayError::DeviceAttestation(format!("identity_hash: {e}")))?;
+        Ok(Self {
+            platform: verdict.platform,
+            value_x,
+            observed_binding: *expected_binding,
+        })
+    }
+
+    pub fn platform(&self) -> &str {
+        &self.platform
+    }
+
+    pub fn value_x(&self) -> &[u8] {
+        &self.value_x
+    }
+}
+
 /// Issue a credential. The caller MUST have already (a) verified the device
 /// attestation against [`device_binding`] for this `device_pubkey`, extracting
 /// `platform` + `value_x`, and (b) be the cloud TEE whose `tee_value_x` is
 /// recorded. This function performs the issuer signing step only.
 #[allow(clippy::too_many_arguments)]
-pub fn issue(
+fn issue(
     issuer_sk: &SigningKey,
     device_pubkey: &VerifyingKey,
     platform: impl Into<String>,
@@ -187,9 +332,10 @@ pub fn issue(
 
 /// In-memory replay guard for relay bootstrap nonces.
 ///
-/// Production issuers should back this with durable/shared storage. This type is
-/// deliberately small and synchronous so single-process issuers and tests do not
-/// have to reimplement the freshness rule.
+/// Production issuers should back this with durable/shared storage. This type
+/// never re-accepts a consumed nonce for the lifetime of the process; a service
+/// that needs bounded storage should rotate the entire store by epoch, not
+/// prune individual consumed nonces back into circulation.
 #[derive(Debug, Default, Clone)]
 pub struct BootstrapReplayStore {
     seen_until: BTreeMap<[u8; 32], u64>,
@@ -202,108 +348,129 @@ impl BootstrapReplayStore {
 
     pub fn check_and_store(
         &mut self,
-        nonce: [u8; 32],
+        challenge: &RelayChallenge,
         now: u64,
-        ttl_secs: u64,
     ) -> Result<(), RelayError> {
-        let expiry = now.checked_add(ttl_secs).ok_or(RelayError::TimeOverflow)?;
-        self.seen_until.retain(|_, seen_expiry| *seen_expiry >= now);
-        if self.seen_until.contains_key(&nonce) {
+        challenge.ensure_fresh(now)?;
+        if self.seen_until.contains_key(&challenge.nonce) {
             return Err(RelayError::BootstrapReplay);
         }
-        self.seen_until.insert(nonce, expiry);
+        self.seen_until
+            .insert(challenge.nonce, challenge.expires_at);
         Ok(())
     }
 }
 
-/// Bootstrap a relay credential from already-verified attestation facts.
-///
-/// This is the safer issuing entry point for normal callers: it refuses to sign
-/// unless the binding observed in the device attestation exactly matches the
-/// expected binding for this bootstrap. A replay/nonce store is still required
-/// at the caller boundary so an old observed binding cannot be reused.
+/// In-memory replay guard for relying-party presentation challenges.
+#[derive(Debug, Default, Clone)]
+pub struct PresentationReplayStore {
+    seen_until: BTreeMap<[u8; 32], u64>,
+}
+
+impl PresentationReplayStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn check_and_store(
+        &mut self,
+        challenge: &RelayChallenge,
+        now: u64,
+    ) -> Result<(), RelayError> {
+        challenge.ensure_fresh(now)?;
+        if self.seen_until.contains_key(&challenge.nonce) {
+            return Err(RelayError::PresentationReplay);
+        }
+        self.seen_until
+            .insert(challenge.nonce, challenge.expires_at);
+        Ok(())
+    }
+}
+
+/// Bootstrap a relay credential from verifier-produced relay and device facts.
+/// The challenge nonce is consumed before signing, and the device attestation
+/// must have committed to [`device_binding`] for this device key, relay TEE, and
+/// challenge.
 #[allow(clippy::too_many_arguments)]
 pub fn bootstrap(
+    replay_store: &mut BootstrapReplayStore,
     issuer_sk: &SigningKey,
     device_pubkey: &VerifyingKey,
-    platform: impl Into<String>,
-    value_x: Vec<u8>,
-    expected_device_binding: &[u8; 32],
-    observed_device_binding: &[u8; 32],
-    tee_value_x: Vec<u8>,
+    device: &VerifiedDeviceAttestation,
+    relay_tee: &VerifiedRelayTee,
+    challenge: &RelayChallenge,
     issued_at: u64,
     ttl_secs: u64,
 ) -> Result<RelayCredential, RelayError> {
     issued_at
         .checked_add(ttl_secs)
         .ok_or(RelayError::TimeOverflow)?;
-    if observed_device_binding != expected_device_binding {
+    let expected_device_binding =
+        device_binding(&device_pubkey.to_bytes(), relay_tee.value_x(), challenge);
+    if device.observed_binding != expected_device_binding {
         return Err(RelayError::DeviceBindingMismatch);
     }
+    replay_store.check_and_store(challenge, issued_at)?;
 
     Ok(issue(
         issuer_sk,
         device_pubkey,
-        platform,
-        value_x,
-        tee_value_x,
+        device.platform.clone(),
+        device.value_x.clone(),
+        relay_tee.value_x.clone(),
         issued_at,
         ttl_secs,
     ))
 }
 
 /// Bootstrap exactly once for a fresh nonce, computing the expected device
-/// binding and recording the nonce before issuing the credential.
+/// binding and recording the nonce before issuing the credential. Kept as a
+/// convenience alias for callers that already use the "once" terminology.
 #[allow(clippy::too_many_arguments)]
 pub fn bootstrap_once(
     replay_store: &mut BootstrapReplayStore,
     issuer_sk: &SigningKey,
     device_pubkey: &VerifyingKey,
-    platform: impl Into<String>,
-    value_x: Vec<u8>,
-    nonce: [u8; 32],
-    observed_device_binding: &[u8; 32],
-    tee_value_x: Vec<u8>,
+    device: &VerifiedDeviceAttestation,
+    relay_tee: &VerifiedRelayTee,
+    challenge: &RelayChallenge,
     issued_at: u64,
     ttl_secs: u64,
 ) -> Result<RelayCredential, RelayError> {
-    let expected_device_binding = device_binding(&device_pubkey.to_bytes(), &tee_value_x, &nonce);
-    if observed_device_binding != &expected_device_binding {
-        return Err(RelayError::DeviceBindingMismatch);
-    }
-    replay_store.check_and_store(nonce, issued_at, ttl_secs)?;
-
-    Ok(issue(
+    bootstrap(
+        replay_store,
         issuer_sk,
         device_pubkey,
-        platform,
-        value_x,
-        tee_value_x,
+        device,
+        relay_tee,
+        challenge,
         issued_at,
         ttl_secs,
-    ))
+    )
 }
 
 /// Produce a holder-of-key proof for `challenge` with the device signing key.
-pub fn present(device_sk: &SigningKey, challenge: &[u8]) -> Presentation {
+pub fn present(device_sk: &SigningKey, challenge: &RelayChallenge) -> Presentation {
     Presentation {
-        sig: device_sk.sign(&pop_message(challenge)).to_bytes().to_vec(),
+        sig: device_sk
+            .sign(&pop_message(&challenge.canonical_bytes()))
+            .to_bytes()
+            .to_vec(),
     }
 }
 
 /// Accept a relay credential presentation and return the relying-party claims.
-///
-/// This helper is the intended hot-path verifier. It does not replace verifier
-/// challenge freshness or replay tracking; callers still need to issue fresh
-/// challenges and remember any nonce/session state required by their protocol.
 pub fn accept(
+    replay_store: &mut PresentationReplayStore,
     credential: &RelayCredential,
     presentation: &Presentation,
     issuer: &VerifyingKey,
-    challenge: &[u8],
+    challenge: &RelayChallenge,
     now: u64,
 ) -> Result<AcceptedRelayClaims, RelayError> {
-    credential.verify_presentation(issuer, challenge, presentation, now)?;
+    challenge.ensure_fresh(now)?;
+    credential.verify_presentation(issuer, &challenge.canonical_bytes(), presentation, now)?;
+    replay_store.check_and_store(challenge, now)?;
     let device_pubkey = vk_from_slice(&credential.device_pubkey)?;
     Ok(AcceptedRelayClaims {
         platform: credential.platform.clone(),
@@ -345,6 +512,28 @@ mod tests {
         SigningKey::from_bytes(&[seed; 32])
     }
 
+    fn challenge(seed: u8, now: u64, ttl: u64) -> RelayChallenge {
+        RelayChallenge::new([seed; 32], now, ttl, b"rp:/authorize".to_vec()).unwrap()
+    }
+
+    fn relay_tee() -> VerifiedRelayTee {
+        VerifiedRelayTee {
+            value_x: vec![0xCD; 48],
+        }
+    }
+
+    fn verified_device(
+        device_vk: &VerifyingKey,
+        relay_tee: &VerifiedRelayTee,
+        challenge: &RelayChallenge,
+    ) -> VerifiedDeviceAttestation {
+        VerifiedDeviceAttestation {
+            platform: "linux-tpm-client".into(),
+            value_x: vec![0xAB; 32],
+            observed_binding: device_binding(device_vk.as_bytes(), relay_tee.value_x(), challenge),
+        }
+    }
+
     #[test]
     fn issue_verify_and_present_roundtrip() {
         let issuer = key(1);
@@ -364,10 +553,18 @@ mod tests {
         assert_eq!(dvk.to_bytes(), device.verifying_key().to_bytes());
 
         // Holder-of-key presentation against a fresh challenge.
-        let challenge = b"relying-party-nonce-123";
-        let pop = present(&device, challenge);
-        cred.verify_presentation(&issuer.verifying_key(), challenge, &pop, 1100)
-            .unwrap();
+        let challenge = challenge(4, 1000, 300);
+        let pop = present(&device, &challenge);
+        let mut replay_store = PresentationReplayStore::new();
+        accept(
+            &mut replay_store,
+            &cred,
+            &pop,
+            &issuer.verifying_key(),
+            &challenge,
+            1100,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -437,16 +634,34 @@ mod tests {
         );
 
         // Right device, wrong challenge.
-        let pop = present(&device, b"challenge-A");
+        let challenge_a = challenge(4, 1000, 300);
+        let challenge_b = challenge(5, 1000, 300);
+        let pop = present(&device, &challenge_a);
+        let mut replay_store = PresentationReplayStore::new();
         assert_eq!(
-            cred.verify_presentation(&issuer.verifying_key(), b"challenge-B", &pop, 1100),
+            accept(
+                &mut replay_store,
+                &cred,
+                &pop,
+                &issuer.verifying_key(),
+                &challenge_b,
+                1100
+            ),
             Err(RelayError::ProofOfPossession)
         );
 
         // A different key cannot present this credential.
-        let pop_other = present(&other, b"challenge-A");
+        let pop_other = present(&other, &challenge_a);
+        let mut replay_store = PresentationReplayStore::new();
         assert_eq!(
-            cred.verify_presentation(&issuer.verifying_key(), b"challenge-A", &pop_other, 1100),
+            accept(
+                &mut replay_store,
+                &cred,
+                &pop_other,
+                &issuer.verifying_key(),
+                &challenge_a,
+                1100
+            ),
             Err(RelayError::ProofOfPossession)
         );
     }
@@ -455,35 +670,34 @@ mod tests {
     fn device_binding_is_deterministic_and_sensitive() {
         let pk = [7u8; 32];
         let tee = [8u8; 48];
-        let nonce = [9u8; 32];
-        let b1 = device_binding(&pk, &tee, &nonce);
-        let b2 = device_binding(&pk, &tee, &nonce);
+        let c1 = challenge(9, 1000, 300);
+        let b1 = device_binding(&pk, &tee, &c1);
+        let b2 = device_binding(&pk, &tee, &c1);
         assert_eq!(b1, b2);
-        let b3 = device_binding(&pk, &tee, &[10u8; 32]);
+        let b3 = device_binding(&pk, &tee, &challenge(10, 1000, 300));
+        let b4 = device_binding(&pk, &tee, &challenge(9, 1000, 301));
         assert_ne!(b1, b3);
+        assert_ne!(b1, b4);
     }
 
     #[test]
     fn bootstrap_rejects_binding_mismatch_before_issuing() {
         let issuer = key(1);
         let device = key(2);
-        let nonce = [9u8; 32];
-        let tee_value_x = vec![0xCD; 48];
-        let expected = device_binding(&device.verifying_key().to_bytes(), &tee_value_x, &nonce);
-        let observed = device_binding(
-            &device.verifying_key().to_bytes(),
-            &tee_value_x,
-            &[10u8; 32],
-        );
+        let relay_tee = relay_tee();
+        let expected_challenge = challenge(9, 1000, 300);
+        let wrong_challenge = challenge(10, 1000, 300);
+        let device_attestation =
+            verified_device(&device.verifying_key(), &relay_tee, &wrong_challenge);
+        let mut replay_store = BootstrapReplayStore::new();
 
         let result = bootstrap(
+            &mut replay_store,
             &issuer,
             &device.verifying_key(),
-            "linux-tpm-client",
-            vec![0xAB; 32],
-            &expected,
-            &observed,
-            tee_value_x,
+            &device_attestation,
+            &relay_tee,
+            &expected_challenge,
             1000,
             300,
         );
@@ -495,29 +709,39 @@ mod tests {
     fn bootstrap_and_accept_returns_claims() {
         let issuer = key(1);
         let device = key(2);
-        let nonce = [9u8; 32];
-        let tee_value_x = vec![0xCD; 48];
-        let binding = device_binding(&device.verifying_key().to_bytes(), &tee_value_x, &nonce);
+        let relay_tee = relay_tee();
+        let bootstrap_challenge = challenge(9, 1000, 300);
+        let device_attestation =
+            verified_device(&device.verifying_key(), &relay_tee, &bootstrap_challenge);
+        let mut bootstrap_store = BootstrapReplayStore::new();
         let cred = bootstrap(
+            &mut bootstrap_store,
             &issuer,
             &device.verifying_key(),
-            "linux-tpm-client",
-            vec![0xAB; 32],
-            &binding,
-            &binding,
-            tee_value_x.clone(),
+            &device_attestation,
+            &relay_tee,
+            &bootstrap_challenge,
             1000,
             300,
         )
         .unwrap();
-        let challenge = b"fresh relying-party challenge";
-        let pop = present(&device, challenge);
+        let presentation_challenge = challenge(11, 1100, 60);
+        let pop = present(&device, &presentation_challenge);
+        let mut presentation_store = PresentationReplayStore::new();
 
-        let claims = accept(&cred, &pop, &issuer.verifying_key(), challenge, 1100).unwrap();
+        let claims = accept(
+            &mut presentation_store,
+            &cred,
+            &pop,
+            &issuer.verifying_key(),
+            &presentation_challenge,
+            1100,
+        )
+        .unwrap();
 
         assert_eq!(claims.platform, "linux-tpm-client");
         assert_eq!(claims.value_x, vec![0xAB; 32]);
-        assert_eq!(claims.tee_value_x, tee_value_x);
+        assert_eq!(claims.tee_value_x, relay_tee.value_x);
         assert_eq!(
             claims.device_pubkey.to_bytes(),
             device.verifying_key().to_bytes()
@@ -528,20 +752,19 @@ mod tests {
     fn bootstrap_once_rejects_nonce_replay() {
         let issuer = key(1);
         let device = key(2);
-        let nonce = [9u8; 32];
-        let tee_value_x = vec![0xCD; 48];
-        let binding = device_binding(&device.verifying_key().to_bytes(), &tee_value_x, &nonce);
+        let relay_tee = relay_tee();
+        let bootstrap_challenge = challenge(9, 1000, 300);
+        let device_attestation =
+            verified_device(&device.verifying_key(), &relay_tee, &bootstrap_challenge);
         let mut replay_store = BootstrapReplayStore::new();
 
         bootstrap_once(
             &mut replay_store,
             &issuer,
             &device.verifying_key(),
-            "linux-tpm-client",
-            vec![0xAB; 32],
-            nonce,
-            &binding,
-            tee_value_x.clone(),
+            &device_attestation,
+            &relay_tee,
+            &bootstrap_challenge,
             1000,
             300,
         )
@@ -551,11 +774,9 @@ mod tests {
             &mut replay_store,
             &issuer,
             &device.verifying_key(),
-            "linux-tpm-client",
-            vec![0xAB; 32],
-            nonce,
-            &binding,
-            tee_value_x,
+            &device_attestation,
+            &relay_tee,
+            &bootstrap_challenge,
             1100,
             300,
         );
@@ -564,41 +785,61 @@ mod tests {
     }
 
     #[test]
-    fn replay_store_prunes_expired_nonces() {
+    fn bootstrap_replay_store_keeps_consumed_nonces_after_expiry() {
         let mut replay_store = BootstrapReplayStore::new();
-        let nonce = [9u8; 32];
+        let original = challenge(9, 1000, 10);
+        let same_nonce_new_epoch =
+            RelayChallenge::new([9u8; 32], 1011, 10, b"new".to_vec()).unwrap();
 
-        replay_store.check_and_store(nonce, 1000, 10).unwrap();
+        replay_store.check_and_store(&original, 1000).unwrap();
         assert_eq!(
-            replay_store.check_and_store(nonce, 1005, 10),
+            replay_store.check_and_store(&original, 1005),
             Err(RelayError::BootstrapReplay)
         );
-        replay_store.check_and_store(nonce, 1011, 10).unwrap();
+        assert_eq!(
+            replay_store.check_and_store(&original, 1011),
+            Err(RelayError::ChallengeExpired)
+        );
+        assert_eq!(
+            replay_store.check_and_store(&same_nonce_new_epoch, 1011),
+            Err(RelayError::BootstrapReplay)
+        );
     }
 
     #[test]
     fn accept_rejects_wrong_challenge() {
         let issuer = key(1);
         let device = key(2);
-        let nonce = [9u8; 32];
-        let tee_value_x = vec![0xCD; 48];
-        let binding = device_binding(&device.verifying_key().to_bytes(), &tee_value_x, &nonce);
+        let relay_tee = relay_tee();
+        let bootstrap_challenge = challenge(9, 1000, 300);
+        let device_attestation =
+            verified_device(&device.verifying_key(), &relay_tee, &bootstrap_challenge);
+        let mut bootstrap_store = BootstrapReplayStore::new();
         let cred = bootstrap(
+            &mut bootstrap_store,
             &issuer,
             &device.verifying_key(),
-            "linux-tpm-client",
-            vec![0xAB; 32],
-            &binding,
-            &binding,
-            tee_value_x,
+            &device_attestation,
+            &relay_tee,
+            &bootstrap_challenge,
             1000,
             300,
         )
         .unwrap();
-        let pop = present(&device, b"challenge-A");
+        let challenge_a = challenge(11, 1100, 60);
+        let challenge_b = challenge(12, 1100, 60);
+        let pop = present(&device, &challenge_a);
+        let mut presentation_store = PresentationReplayStore::new();
 
         assert_eq!(
-            accept(&cred, &pop, &issuer.verifying_key(), b"challenge-B", 1100),
+            accept(
+                &mut presentation_store,
+                &cred,
+                &pop,
+                &issuer.verifying_key(),
+                &challenge_b,
+                1100
+            ),
             Err(RelayError::ProofOfPossession)
         );
     }
@@ -607,27 +848,112 @@ mod tests {
     fn accept_rejects_expired_credential() {
         let issuer = key(1);
         let device = key(2);
-        let nonce = [9u8; 32];
-        let tee_value_x = vec![0xCD; 48];
-        let binding = device_binding(&device.verifying_key().to_bytes(), &tee_value_x, &nonce);
+        let relay_tee = relay_tee();
+        let bootstrap_challenge = challenge(9, 1000, 300);
+        let device_attestation =
+            verified_device(&device.verifying_key(), &relay_tee, &bootstrap_challenge);
+        let mut bootstrap_store = BootstrapReplayStore::new();
         let cred = bootstrap(
+            &mut bootstrap_store,
             &issuer,
             &device.verifying_key(),
-            "linux-tpm-client",
-            vec![0xAB; 32],
-            &binding,
-            &binding,
-            tee_value_x,
+            &device_attestation,
+            &relay_tee,
+            &bootstrap_challenge,
             1000,
             300,
         )
         .unwrap();
-        let challenge = b"fresh relying-party challenge";
-        let pop = present(&device, challenge);
+        let challenge = challenge(11, 1100, 2000);
+        let pop = present(&device, &challenge);
+        let mut presentation_store = PresentationReplayStore::new();
 
         assert_eq!(
-            accept(&cred, &pop, &issuer.verifying_key(), challenge, 2000),
+            accept(
+                &mut presentation_store,
+                &cred,
+                &pop,
+                &issuer.verifying_key(),
+                &challenge,
+                2000
+            ),
             Err(RelayError::Expired)
+        );
+    }
+
+    #[test]
+    fn accept_rejects_presentation_replay() {
+        let issuer = key(1);
+        let device = key(2);
+        let relay_tee = relay_tee();
+        let bootstrap_challenge = challenge(9, 1000, 300);
+        let device_attestation =
+            verified_device(&device.verifying_key(), &relay_tee, &bootstrap_challenge);
+        let mut bootstrap_store = BootstrapReplayStore::new();
+        let cred = bootstrap(
+            &mut bootstrap_store,
+            &issuer,
+            &device.verifying_key(),
+            &device_attestation,
+            &relay_tee,
+            &bootstrap_challenge,
+            1000,
+            300,
+        )
+        .unwrap();
+        let challenge = challenge(11, 1100, 60);
+        let pop = present(&device, &challenge);
+        let mut presentation_store = PresentationReplayStore::new();
+
+        accept(
+            &mut presentation_store,
+            &cred,
+            &pop,
+            &issuer.verifying_key(),
+            &challenge,
+            1100,
+        )
+        .unwrap();
+        assert_eq!(
+            accept(
+                &mut presentation_store,
+                &cred,
+                &pop,
+                &issuer.verifying_key(),
+                &challenge,
+                1101
+            ),
+            Err(RelayError::PresentationReplay)
+        );
+    }
+
+    #[test]
+    fn accept_rejects_expired_challenge() {
+        let issuer = key(1);
+        let device = key(2);
+        let cred = issue(
+            &issuer,
+            &device.verifying_key(),
+            "linux-tpm-client",
+            vec![0xAB; 32],
+            vec![0xCD; 48],
+            1000,
+            300,
+        );
+        let challenge = challenge(11, 1000, 10);
+        let pop = present(&device, &challenge);
+        let mut presentation_store = PresentationReplayStore::new();
+
+        assert_eq!(
+            accept(
+                &mut presentation_store,
+                &cred,
+                &pop,
+                &issuer.verifying_key(),
+                &challenge,
+                1011
+            ),
+            Err(RelayError::ChallengeExpired)
         );
     }
 }
