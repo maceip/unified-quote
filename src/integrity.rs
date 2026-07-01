@@ -103,7 +103,9 @@ pub fn start_integrity_monitor(
                     if let Err(e) = extend_rtmr2(&current_x) {
                         eprintln!("[uq/integrity] Failed to extend RTMR2: {e}");
                     } else {
-                        eprintln!("[uq/integrity] RTMR2 extended — future quotes will reflect the change");
+                        eprintln!(
+                            "[uq/integrity] RTMR2 extended — future quotes will reflect the change"
+                        );
                         guard.rtmr_extended = true;
                     }
                 }

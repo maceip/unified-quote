@@ -75,17 +75,15 @@ fn collect_via_configfs(report_data: &[u8; 64]) -> Result<TeeEvidence, TeeError>
     let report_dir = format!("{TSM_REPORT_BASE}/{report_name}");
 
     // Create the report directory
-    fs::create_dir(&report_dir).map_err(|e| {
-        TeeError::DeviceNotFound(format!("Failed to create {report_dir}: {e}"))
-    })?;
+    fs::create_dir(&report_dir)
+        .map_err(|e| TeeError::DeviceNotFound(format!("Failed to create {report_dir}: {e}")))?;
 
     // Cleanup on any error
     let _cleanup = scopeguard(&report_dir);
 
     // Write report_data as hex to inblob
-    fs::write(format!("{report_dir}/inblob"), report_data).map_err(|e| {
-        TeeError::InvalidResponse(format!("Failed to write inblob: {e}"))
-    })?;
+    fs::write(format!("{report_dir}/inblob"), report_data)
+        .map_err(|e| TeeError::InvalidResponse(format!("Failed to write inblob: {e}")))?;
 
     // Read the provider to confirm it's TDX
     let provider = fs::read_to_string(format!("{report_dir}/provider")).unwrap_or_default();
@@ -96,9 +94,8 @@ fn collect_via_configfs(report_data: &[u8; 64]) -> Result<TeeEvidence, TeeError>
     }
 
     // Read the quote from outblob
-    let quote = fs::read(format!("{report_dir}/outblob")).map_err(|e| {
-        TeeError::InvalidResponse(format!("Failed to read outblob: {e}"))
-    })?;
+    let quote = fs::read(format!("{report_dir}/outblob"))
+        .map_err(|e| TeeError::InvalidResponse(format!("Failed to read outblob: {e}")))?;
 
     // Try to read aux certs (may not exist)
     let cert_chain = match fs::read(format!("{report_dir}/auxblob")) {

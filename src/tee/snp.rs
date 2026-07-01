@@ -151,7 +151,8 @@ impl TeeProvider for SnpProvider {
 
         // Parse the response — the attestation report is in report_buf
         // after the SnpReportResp header (32 bytes)
-        let resp_header: &SnpReportResp = unsafe { &*(report_buf.as_ptr() as *const SnpReportResp) };
+        let resp_header: &SnpReportResp =
+            unsafe { &*(report_buf.as_ptr() as *const SnpReportResp) };
 
         if resp_header.status != 0 {
             return Err(TeeError::InvalidResponse(format!(
@@ -219,7 +220,8 @@ impl SnpProvider {
             return Err(TeeError::Ioctl(nix::Error::last()));
         }
 
-        let resp_header: &SnpReportResp = unsafe { &*(report_buf.as_ptr() as *const SnpReportResp) };
+        let resp_header: &SnpReportResp =
+            unsafe { &*(report_buf.as_ptr() as *const SnpReportResp) };
         let report_size = resp_header.report_size as usize;
         let report_start = std::mem::size_of::<SnpReportResp>();
         let report_bytes = report_buf[report_start..report_start + report_size].to_vec();
@@ -248,8 +250,10 @@ fn parse_snp_cert_table(data: &[u8]) -> Vec<Vec<u8>> {
         if guid.iter().all(|&b| b == 0) {
             break; // End of table
         }
-        let offset = u32::from_le_bytes(data[pos + 16..pos + 20].try_into().unwrap_or([0; 4])) as usize;
-        let length = u32::from_le_bytes(data[pos + 20..pos + 24].try_into().unwrap_or([0; 4])) as usize;
+        let offset =
+            u32::from_le_bytes(data[pos + 16..pos + 20].try_into().unwrap_or([0; 4])) as usize;
+        let length =
+            u32::from_le_bytes(data[pos + 20..pos + 24].try_into().unwrap_or([0; 4])) as usize;
         entries.push((offset, length));
         pos += 24;
     }

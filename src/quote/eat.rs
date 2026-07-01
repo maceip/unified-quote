@@ -19,7 +19,7 @@
 //!   PROFILE:     0=version  -1=eat_profile
 
 use ciborium::Value as CborValue;
-use coset::{CborSerializable, CoseSign1, CoseSign1Builder, HeaderBuilder, iana};
+use coset::{iana, CborSerializable, CoseSign1, CoseSign1Builder, HeaderBuilder};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 
 use super::Platform;
@@ -85,42 +85,90 @@ impl EatClaims {
         let mut map: Vec<(CborValue, CborValue)> = Vec::with_capacity(16);
 
         // Profile
-        map.push((CborValue::Integer(KEY_VERSION.into()), CborValue::Integer(SCHEMA_VERSION.into())));
-        map.push((CborValue::Integer(KEY_EAT_PROFILE.into()), CborValue::Text(EAT_PROFILE.into())));
+        map.push((
+            CborValue::Integer(KEY_VERSION.into()),
+            CborValue::Integer(SCHEMA_VERSION.into()),
+        ));
+        map.push((
+            CborValue::Integer(KEY_EAT_PROFILE.into()),
+            CborValue::Text(EAT_PROFILE.into()),
+        ));
 
         // Identity
-        map.push((CborValue::Integer(KEY_VALUE_X.into()), CborValue::Bytes(self.value_x.to_vec())));
-        map.push((CborValue::Integer(KEY_PLATFORM.into()), CborValue::Integer((self.platform as u8 as u64).into())));
-        map.push((CborValue::Integer(KEY_PUBKEY.into()), CborValue::Bytes(self.pubkey.to_vec())));
+        map.push((
+            CborValue::Integer(KEY_VALUE_X.into()),
+            CborValue::Bytes(self.value_x.to_vec()),
+        ));
+        map.push((
+            CborValue::Integer(KEY_PLATFORM.into()),
+            CborValue::Integer((self.platform as u8 as u64).into()),
+        ));
+        map.push((
+            CborValue::Integer(KEY_PUBKEY.into()),
+            CborValue::Bytes(self.pubkey.to_vec()),
+        ));
 
         // Evidence
-        map.push((CborValue::Integer(KEY_QUOTE_HASH.into()), CborValue::Bytes(self.quote_hash.to_vec())));
+        map.push((
+            CborValue::Integer(KEY_QUOTE_HASH.into()),
+            CborValue::Bytes(self.quote_hash.to_vec()),
+        ));
         if let Some(ref q) = self.platform_quote {
-            map.push((CborValue::Integer(KEY_PLATFORM_QUOTE.into()), CborValue::Bytes(q.clone())));
+            map.push((
+                CborValue::Integer(KEY_PLATFORM_QUOTE.into()),
+                CborValue::Bytes(q.clone()),
+            ));
         }
         if let Some(ref v) = self.tcb_version {
-            map.push((CborValue::Integer(KEY_TCB_VERSION.into()), CborValue::Text(v.clone())));
+            map.push((
+                CborValue::Integer(KEY_TCB_VERSION.into()),
+                CborValue::Text(v.clone()),
+            ));
         }
         if let Some(ref h) = self.collateral_hash {
-            map.push((CborValue::Integer(KEY_COLLATERAL_HASH.into()), CborValue::Bytes(h.to_vec())));
+            map.push((
+                CborValue::Integer(KEY_COLLATERAL_HASH.into()),
+                CborValue::Bytes(h.to_vec()),
+            ));
         }
 
         // Provenance
         if let Some(ref h) = self.build_hash {
-            map.push((CborValue::Integer(KEY_BUILD_HASH.into()), CborValue::Bytes(h.to_vec())));
+            map.push((
+                CborValue::Integer(KEY_BUILD_HASH.into()),
+                CborValue::Bytes(h.to_vec()),
+            ));
         }
         if let Some(ref c) = self.source_commit {
-            map.push((CborValue::Integer(KEY_SOURCE_COMMIT.into()), CborValue::Text(c.clone())));
+            map.push((
+                CborValue::Integer(KEY_SOURCE_COMMIT.into()),
+                CborValue::Text(c.clone()),
+            ));
         }
         if let Some(ref r) = self.registry_entry {
-            map.push((CborValue::Integer(KEY_REGISTRY_ENTRY.into()), CborValue::Text(r.clone())));
+            map.push((
+                CborValue::Integer(KEY_REGISTRY_ENTRY.into()),
+                CborValue::Text(r.clone()),
+            ));
         }
 
         // Freshness
-        map.push((CborValue::Integer(KEY_IAT.into()), CborValue::Integer(self.iat.into())));
-        map.push((CborValue::Integer(KEY_NONCE.into()), CborValue::Bytes(self.nonce.to_vec())));
-        map.push((CborValue::Integer(KEY_HEARTBEAT_SEQ.into()), CborValue::Integer(self.heartbeat_seq.into())));
-        map.push((CborValue::Integer(KEY_INTEGRITY_OK.into()), CborValue::Bool(self.integrity_ok)));
+        map.push((
+            CborValue::Integer(KEY_IAT.into()),
+            CborValue::Integer(self.iat.into()),
+        ));
+        map.push((
+            CborValue::Integer(KEY_NONCE.into()),
+            CborValue::Bytes(self.nonce.to_vec()),
+        ));
+        map.push((
+            CborValue::Integer(KEY_HEARTBEAT_SEQ.into()),
+            CborValue::Integer(self.heartbeat_seq.into()),
+        ));
+        map.push((
+            CborValue::Integer(KEY_INTEGRITY_OK.into()),
+            CborValue::Bool(self.integrity_ok),
+        ));
 
         let cbor_map = CborValue::Map(map);
         let mut buf = Vec::new();
@@ -130,8 +178,8 @@ impl EatClaims {
 
     /// Decode claims from a CBOR map.
     pub fn from_cbor(data: &[u8]) -> Result<Self, EatError> {
-        let value: CborValue = ciborium::from_reader(data)
-            .map_err(|e| EatError::CborDecode(format!("{e}")))?;
+        let value: CborValue =
+            ciborium::from_reader(data).map_err(|e| EatError::CborDecode(format!("{e}")))?;
 
         let map = match value {
             CborValue::Map(m) => m,
@@ -304,8 +352,8 @@ impl EatToken {
 
     /// Decode and verify an EAT token from raw COSE_Sign1 bytes.
     pub fn verify(cose_bytes: &[u8]) -> Result<Self, EatError> {
-        let cose_sign1 = CoseSign1::from_slice(cose_bytes)
-            .map_err(|e| EatError::CoseDecode(format!("{e}")))?;
+        let cose_sign1 =
+            CoseSign1::from_slice(cose_bytes).map_err(|e| EatError::CoseDecode(format!("{e}")))?;
 
         let payload = cose_sign1
             .payload
