@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-08-25T10:15:52Z",
+  "updated_at": "2026-08-25T10:29:29Z",
   "generator": "report-live-quotes.yml",
   "schema": 1,
   "nodes": [
@@ -17,7 +17,7 @@
       "spki_binding": null,
       "quote_signature": null,
       "chain": null,
-      "checked_at": "2026-08-25T10:15:05Z",
+      "checked_at": "2026-08-25T10:28:42Z",
       "detail": "no response within 45s"
     },
     {
@@ -34,7 +34,7 @@
       "spki_binding": null,
       "quote_signature": null,
       "chain": null,
-      "checked_at": "2026-08-25T10:15:07Z",
+      "checked_at": "2026-08-25T10:28:44Z",
       "detail": "Error: TLS write: Connection reset by peer (os error 104)"
     },
     {
@@ -51,7 +51,7 @@
       "spki_binding": null,
       "quote_signature": null,
       "chain": null,
-      "checked_at": "2026-08-25T10:15:52Z",
+      "checked_at": "2026-08-25T10:29:29Z",
       "detail": "no response within 45s"
     },
     {
