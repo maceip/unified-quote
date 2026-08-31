@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-08-31T09:34:05Z",
+  "updated_at": "2026-08-31T09:52:05Z",
   "generator": "report-live-quotes.yml",
   "schema": 1,
   "nodes": [
@@ -17,7 +17,7 @@
       "spki_binding": "PASS",
       "quote_signature": "FAIL",
       "chain": null,
-      "checked_at": "2026-08-31T09:33:30Z",
+      "checked_at": "2026-08-31T09:51:18Z",
       "detail": "Error: platform quote verification failed"
     },
     {
@@ -34,7 +34,7 @@
       "spki_binding": null,
       "quote_signature": null,
       "chain": null,
-      "checked_at": "2026-08-31T09:33:32Z",
+      "checked_at": "2026-08-31T09:51:20Z",
       "detail": "Error: TLS write: Connection reset by peer (os error 104)"
     },
     {
@@ -44,16 +44,15 @@
       "region": "westeurope",
       "platform": "SevSnp",
       "endpoint": "https://attest.secure.build:8443/",
-      "verdict": "failed",
+      "verdict": "offline",
       "value_x": null,
       "value_x_short": null,
       "measurements": {},
-      "spki_binding": "report_data = sha256(runtime) \u2192 vTPM AK",
-      "quote_signature": "FAIL",
-      "chain": "vTPM HCL \u2192 SNP report \u2192 VCEK \u2192 ASK \u2192 ARK-Milan (pinned)",
-      "checked_at": "2026-08-31T09:34:05Z",
-      "detail": "Error: Azure SNP verification failed: platform quote verification failed: SNP: platform signature chain did not verify",
-      "value_x_bound": false
+      "spki_binding": null,
+      "quote_signature": null,
+      "chain": null,
+      "checked_at": "2026-08-31T09:52:05Z",
+      "detail": "no response within 45s"
     },
     {
       "id": "gcp-tdx-usc1",
