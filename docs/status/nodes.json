@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-08-31T02:17:11Z",
+  "updated_at": "2026-08-31T02:43:03Z",
   "generator": "report-live-quotes.yml",
   "schema": 1,
   "nodes": [
@@ -10,18 +10,15 @@
       "region": "us-east-2",
       "platform": "SevSnp",
       "endpoint": "https://3.138.156.141/",
-      "verdict": "verified",
+      "verdict": "failed",
       "value_x": "174dbc6ab29abf3d6cf529621e4d1342d3ad55613b5401ad67d78de4337f44034bfca040d62daf8b0f0ba3e4cb7710ea",
       "value_x_short": "174dbc6ab29abf3d",
-      "measurements": {
-        "MEASUREMENT": "b756dde72c548e42560ba6b43955b68c1239682104c78fa07989ed3d15478107cb0e0a2a9637604586b9615eb8da7617",
-        "HOST_DATA": "0000000000000000000000000000000000000000000000000000000000000000"
-      },
+      "measurements": {},
       "spki_binding": "PASS",
-      "quote_signature": "PASS",
-      "chain": "PASS (2 stage(s) walked)",
-      "checked_at": "2026-08-31T02:17:08Z",
-      "detail": "quote re-verified against pinned vendor root"
+      "quote_signature": "FAIL",
+      "chain": null,
+      "checked_at": "2026-08-31T02:42:28Z",
+      "detail": "Error: platform quote verification failed"
     },
     {
       "id": "aws-nitro-use2",
@@ -37,7 +34,7 @@
       "spki_binding": null,
       "quote_signature": null,
       "chain": null,
-      "checked_at": "2026-08-31T02:17:11Z",
+      "checked_at": "2026-08-31T02:42:30Z",
       "detail": "Error: TLS write: Connection reset by peer (os error 104)"
     },
     {
@@ -47,18 +44,16 @@
       "region": "westeurope",
       "platform": "SevSnp",
       "endpoint": "https://attest.secure.build:8443/",
-      "verdict": "verified",
-      "value_x": "67f0c4722c11be1c01cdd9d7173cd2f323db64cd226bbf6109286740de434429",
-      "value_x_short": "67f0c4722c11be1c",
-      "measurements": {
-        "MEASUREMENT": "41f77fe5c1416343f84dbeeded504eb4a2c450861317ed3e4e46cd771c79243a4cbeb3d75ec663e6a7a47bd1f4fab503"
-      },
-      "spki_binding": "report_data \u2192 vTPM AK \u2192 AK quote binds value_x",
-      "quote_signature": "verified",
+      "verdict": "failed",
+      "value_x": null,
+      "value_x_short": null,
+      "measurements": {},
+      "spki_binding": "report_data = sha256(runtime) \u2192 vTPM AK",
+      "quote_signature": "FAIL",
       "chain": "vTPM HCL \u2192 SNP report \u2192 VCEK \u2192 ASK \u2192 ARK-Milan (pinned)",
-      "checked_at": "2026-08-31T02:17:11Z",
-      "detail": "vTPM SNP re-verified against the AMD root; value_x bound via AK quote (GitHub build provenance \u2192 silicon)",
-      "value_x_bound": true
+      "checked_at": "2026-08-31T02:43:03Z",
+      "detail": "Error: Azure SNP verification failed: platform quote verification failed: SNP: platform signature chain did not verify",
+      "value_x_bound": false
     },
     {
       "id": "gcp-tdx-usc1",
