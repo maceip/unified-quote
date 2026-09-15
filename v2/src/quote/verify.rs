@@ -400,23 +400,35 @@ fn verify_nitro_quote(
 
     // cabundle is ordered root-to-leaf: cab[0] is closest to root, cab[last] issued leaf
     // Verify chain: cab[0] -> cab[1] -> ... -> cab[N] -> leaf_cert
-    if !cab.is_empty() {
-        // Verify cab[i] signed cab[i+1]
-        for i in 0..cab.len() - 1 {
-            verify_cert_chain_p384_nitro(&cab[i], &cab[i + 1])?;
-        }
-        // Verify cab[last] signed leaf_cert
-        verify_cert_chain_p384_nitro(cab.last().unwrap(), &leaf_cert_der)?;
+    //
+    // An empty cabundle is a hard failure, never a skip: with no intermediates
+    // there is no path from the leaf that signed the COSE_Sign1 to the pinned
+    // AWS Nitro Root CA, so the only thing the COSE check proves is that the
+    // document was signed by whoever put the leaf cert in it. Anyone can
+    // generate a P-384 key, drop it in `certificate`, set `cabundle: []`, and
+    // sign arbitrary PCRs. Every genuine NSM document carries the root plus at
+    // least one intermediate.
+    if cab.is_empty() {
+        return Err(VerifyError::PlatformError(
+            "Nitro: empty cabundle — no certificate path to the pinned AWS Nitro Root CA".into(),
+        ));
+    }
 
-        // Verify root cert (cab[0]) is self-signed
-        verify_cert_chain_p384_nitro(&cab[0], &cab[0])?;
+    // Verify cab[i] signed cab[i+1]
+    for i in 0..cab.len() - 1 {
+        verify_cert_chain_p384_nitro(&cab[i], &cab[i + 1])?;
+    }
+    // Verify cab[last] signed leaf_cert
+    verify_cert_chain_p384_nitro(cab.last().unwrap(), &leaf_cert_der)?;
 
-        // Pin root CA fingerprint
-        if !super::roots::verify_root_fingerprint(&cab[0], super::roots::AWS_NITRO_ROOT_SHA256) {
-            return Err(VerifyError::PlatformError(
-                "Nitro: root CA fingerprint does not match pinned AWS Nitro Root CA".into(),
-            ));
-        }
+    // Verify root cert (cab[0]) is self-signed
+    verify_cert_chain_p384_nitro(&cab[0], &cab[0])?;
+
+    // Pin root CA fingerprint
+    if !super::roots::verify_root_fingerprint(&cab[0], super::roots::AWS_NITRO_ROOT_SHA256) {
+        return Err(VerifyError::PlatformError(
+            "Nitro: root CA fingerprint does not match pinned AWS Nitro Root CA".into(),
+        ));
     }
 
     // Sort PCRs by index
@@ -1065,4 +1077,174 @@ pub enum VerifyError {
     UnsupportedPlatform(Platform),
     #[error("platform quote verification failed: {0}")]
     PlatformError(String),
+}
+
+#[cfg(all(test, feature = "nitro"))]
+mod nitro_chain_tests {
+    use super::*;
+    use serde_cbor::Value;
+
+    /// A real Nitro attestation document captured from hardware
+    /// (`testdata/nitro_attestation.json`), plus its COSE protected header,
+    /// payload map and the 32-byte binding its `user_data` commits to.
+    struct RealDoc {
+        protected: Vec<u8>,
+        payload: Vec<(Value, Value)>,
+        binding: [u8; 32],
+        raw: Vec<u8>,
+    }
+
+    fn load_real_doc() -> RealDoc {
+        let json_str = std::fs::read_to_string("testdata/nitro_attestation.json")
+            .expect("testdata/nitro_attestation.json");
+        let data: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let raw = hex::decode(data["attestation_doc"].as_str().unwrap()).unwrap();
+
+        let cose: Value = serde_cbor::from_slice(&raw).unwrap();
+        let arr = match &cose {
+            Value::Tag(18, inner) => match inner.as_ref() {
+                Value::Array(a) => a.clone(),
+                _ => panic!("COSE_Sign1: not array inside tag"),
+            },
+            Value::Array(a) => a.clone(),
+            _ => panic!("not a COSE_Sign1"),
+        };
+        let protected = match &arr[0] {
+            Value::Bytes(b) => b.clone(),
+            _ => panic!("protected header not bytes"),
+        };
+        let payload_bytes = match &arr[2] {
+            Value::Bytes(b) => b.clone(),
+            _ => panic!("payload not bytes"),
+        };
+        let payload = match serde_cbor::from_slice::<Value>(&payload_bytes).unwrap() {
+            Value::Map(m) => m.into_iter().collect::<Vec<_>>(),
+            _ => panic!("payload not a map"),
+        };
+
+        let user_data = field(&payload, "user_data");
+        let mut binding = [0u8; 32];
+        binding.copy_from_slice(&user_data[..32]);
+
+        RealDoc {
+            protected,
+            payload,
+            binding,
+            raw,
+        }
+    }
+
+    fn field(payload: &[(Value, Value)], name: &str) -> Vec<u8> {
+        payload
+            .iter()
+            .find(|(k, _)| matches!(k, Value::Text(t) if t == name))
+            .map(|(_, v)| match v {
+                Value::Bytes(b) => b.clone(),
+                _ => panic!("{name} not bytes"),
+            })
+            .unwrap_or_else(|| panic!("{name} missing from payload"))
+    }
+
+    /// Positive control: the captured hardware document still verifies
+    /// end-to-end — COSE signature, full cabundle chain, pinned root.
+    #[test]
+    fn real_nitro_doc_verifies() {
+        let doc = load_real_doc();
+        verify_platform_quote(Platform::Nitro, &doc.raw, &doc.binding)
+            .expect("captured hardware Nitro doc must verify");
+    }
+
+    /// A document signed by an attacker-held P-384 key with `cabundle: []`
+    /// must be rejected. Before the fix the chain checks and root pinning were
+    /// wrapped in `if !cab.is_empty()`, so an empty cabundle skipped them and
+    /// the verifier returned Ok with attacker-chosen PCRs.
+    #[test]
+    fn forged_doc_with_empty_cabundle_is_rejected() {
+        use p384::ecdsa::{signature::Signer, Signature, SigningKey};
+
+        let real = load_real_doc();
+
+        // Attacker key. Splice its public key into the real leaf cert DER so
+        // the forged document carries a parseable cert we hold the key for —
+        // the cert's own signature is irrelevant on the empty-cabundle path.
+        let sk = SigningKey::random(&mut rand::rngs::OsRng);
+        let vk_point = sk.verifying_key().to_encoded_point(false);
+        let attacker_pk = vk_point.as_bytes();
+
+        let real_cert = field(&real.payload, "certificate");
+        let real_pk = {
+            use der::Decode;
+            x509_cert::Certificate::from_der(&real_cert)
+                .unwrap()
+                .tbs_certificate
+                .subject_public_key_info
+                .subject_public_key
+                .raw_bytes()
+                .to_vec()
+        };
+        assert_eq!(attacker_pk.len(), real_pk.len(), "SEC1 P-384 point length");
+        let pos = real_cert
+            .windows(real_pk.len())
+            .position(|w| w == real_pk.as_slice())
+            .expect("leaf public key not found in cert DER");
+        let mut forged_cert = real_cert.clone();
+        forged_cert[pos..pos + attacker_pk.len()].copy_from_slice(attacker_pk);
+
+        // Attacker-chosen binding and PCRs.
+        let binding = [0x42u8; 32];
+        let mut user_data = vec![0u8; 64];
+        user_data[..32].copy_from_slice(&binding);
+
+        let forged_payload = Value::Map(
+            vec![
+                (
+                    Value::Text("module_id".into()),
+                    Value::Text("i-attacker-enc0000".into()),
+                ),
+                (Value::Text("digest".into()), Value::Text("SHA384".into())),
+                (
+                    Value::Text("pcrs".into()),
+                    Value::Map(
+                        vec![(Value::Integer(0), Value::Bytes(vec![0xaa; 48]))]
+                            .into_iter()
+                            .collect(),
+                    ),
+                ),
+                (Value::Text("user_data".into()), Value::Bytes(user_data)),
+                (Value::Text("certificate".into()), Value::Bytes(forged_cert)),
+                (Value::Text("cabundle".into()), Value::Array(vec![])),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let forged_payload_bytes = serde_cbor::to_vec(&forged_payload).unwrap();
+
+        // Sign the COSE Sig_structure with the attacker key, so the
+        // COSE_Sign1 check against the embedded leaf cert passes.
+        let sig_structure = Value::Array(vec![
+            Value::Text("Signature1".into()),
+            Value::Bytes(real.protected.clone()),
+            Value::Bytes(vec![]),
+            Value::Bytes(forged_payload_bytes.clone()),
+        ]);
+        let sig: Signature = sk.sign(&serde_cbor::to_vec(&sig_structure).unwrap());
+
+        let forged_doc = serde_cbor::to_vec(&Value::Tag(
+            18,
+            Box::new(Value::Array(vec![
+                Value::Bytes(real.protected),
+                Value::Map(Default::default()),
+                Value::Bytes(forged_payload_bytes),
+                Value::Bytes(sig.to_bytes().to_vec()),
+            ])),
+        ))
+        .unwrap();
+
+        let err = verify_platform_quote(Platform::Nitro, &forged_doc, &binding)
+            .expect_err("forged Nitro doc with empty cabundle must be rejected");
+        assert!(
+            err.to_string().contains("cabundle"),
+            "unexpected rejection reason: {err}"
+        );
+    }
 }

@@ -371,23 +371,35 @@ fn verify_nitro_quote(
 
     // cabundle is ordered root-to-leaf: cab[0] is closest to root, cab[last] issued leaf
     // Verify chain: cab[0] -> cab[1] -> ... -> cab[N] -> leaf_cert
-    if !cab.is_empty() {
-        // Verify cab[i] signed cab[i+1]
-        for i in 0..cab.len() - 1 {
-            verify_cert_chain_p384_nitro(&cab[i], &cab[i + 1])?;
-        }
-        // Verify cab[last] signed leaf_cert
-        verify_cert_chain_p384_nitro(cab.last().unwrap(), &leaf_cert_der)?;
+    //
+    // An empty cabundle is a hard failure, never a skip: with no intermediates
+    // there is no path from the leaf that signed the COSE_Sign1 to the pinned
+    // AWS Nitro Root CA, so the only thing the COSE check proves is that the
+    // document was signed by whoever put the leaf cert in it. Anyone can
+    // generate a P-384 key, drop it in `certificate`, set `cabundle: []`, and
+    // sign arbitrary PCRs. Every genuine NSM document carries the root plus at
+    // least one intermediate.
+    if cab.is_empty() {
+        return Err(VerifyError::PlatformError(
+            "Nitro: empty cabundle — no certificate path to the pinned AWS Nitro Root CA".into(),
+        ));
+    }
 
-        // Verify root cert (cab[0]) is self-signed
-        verify_cert_chain_p384_nitro(&cab[0], &cab[0])?;
+    // Verify cab[i] signed cab[i+1]
+    for i in 0..cab.len() - 1 {
+        verify_cert_chain_p384_nitro(&cab[i], &cab[i + 1])?;
+    }
+    // Verify cab[last] signed leaf_cert
+    verify_cert_chain_p384_nitro(cab.last().unwrap(), &leaf_cert_der)?;
 
-        // Pin root CA fingerprint
-        if !super::roots::verify_root_fingerprint(&cab[0], super::roots::AWS_NITRO_ROOT_SHA256) {
-            return Err(VerifyError::PlatformError(
-                "Nitro: root CA fingerprint does not match pinned AWS Nitro Root CA".into(),
-            ));
-        }
+    // Verify root cert (cab[0]) is self-signed
+    verify_cert_chain_p384_nitro(&cab[0], &cab[0])?;
+
+    // Pin root CA fingerprint
+    if !super::roots::verify_root_fingerprint(&cab[0], super::roots::AWS_NITRO_ROOT_SHA256) {
+        return Err(VerifyError::PlatformError(
+            "Nitro: root CA fingerprint does not match pinned AWS Nitro Root CA".into(),
+        ));
     }
 
     // Sort PCRs by index
