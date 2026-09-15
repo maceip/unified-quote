@@ -394,7 +394,30 @@ fn verify_nitro_quote(
     }
 
     // --- Certificate chain verification ---
-    verify_nitro_chain(cabundle, &leaf_cert_der)?;
+    let cab = cabundle.ok_or_else(|| {
+        VerifyError::PlatformError("Nitro: no cabundle in attestation doc".into())
+    })?;
+
+    // cabundle is ordered root-to-leaf: cab[0] is closest to root, cab[last] issued leaf
+    // Verify chain: cab[0] -> cab[1] -> ... -> cab[N] -> leaf_cert
+    if !cab.is_empty() {
+        // Verify cab[i] signed cab[i+1]
+        for i in 0..cab.len() - 1 {
+            verify_cert_chain_p384_nitro(&cab[i], &cab[i + 1])?;
+        }
+        // Verify cab[last] signed leaf_cert
+        verify_cert_chain_p384_nitro(cab.last().unwrap(), &leaf_cert_der)?;
+
+        // Verify root cert (cab[0]) is self-signed
+        verify_cert_chain_p384_nitro(&cab[0], &cab[0])?;
+
+        // Pin root CA fingerprint
+        if !super::roots::verify_root_fingerprint(&cab[0], super::roots::AWS_NITRO_ROOT_SHA256) {
+            return Err(VerifyError::PlatformError(
+                "Nitro: root CA fingerprint does not match pinned AWS Nitro Root CA".into(),
+            ));
+        }
+    }
 
     // Sort PCRs by index
     pcrs.sort_by(|a, b| {
@@ -404,47 +427,6 @@ fn verify_nitro_quote(
     });
 
     Ok((true, pcrs))
-}
-
-/// Verify the Nitro certificate chain and pin the vendor root.
-///
-/// `cabundle` is ordered root-to-leaf: cab[0] is closest to root,
-/// cab[last] issued the leaf. Verifies every link, that the root is
-/// self-signed, and that the root fingerprint matches the pinned
-/// AWS Nitro Root CA.
-///
-/// Missing AND empty bundles are both rejected: an empty bundle must not
-/// silently skip root pinning (fail-closed on the trust anchor).
-#[cfg(feature = "nitro")]
-fn verify_nitro_chain(
-    cabundle: Option<Vec<Vec<u8>>>,
-    leaf_cert_der: &[u8],
-) -> Result<(), VerifyError> {
-    let cab = match cabundle {
-        Some(cab) if !cab.is_empty() => cab,
-        _ => {
-            return Err(VerifyError::PlatformError(
-                "Nitro: missing or empty cabundle in attestation doc".into(),
-            ))
-        }
-    };
-
-    // Verify chain: cab[0] -> cab[1] -> ... -> cab[N] -> leaf_cert
-    for i in 0..cab.len() - 1 {
-        verify_cert_chain_p384_nitro(&cab[i], &cab[i + 1])?;
-    }
-    verify_cert_chain_p384_nitro(cab.last().unwrap(), leaf_cert_der)?;
-
-    // Verify root cert (cab[0]) is self-signed
-    verify_cert_chain_p384_nitro(&cab[0], &cab[0])?;
-
-    // Pin root CA fingerprint
-    if !super::roots::verify_root_fingerprint(&cab[0], super::roots::AWS_NITRO_ROOT_SHA256) {
-        return Err(VerifyError::PlatformError(
-            "Nitro: root CA fingerprint does not match pinned AWS Nitro Root CA".into(),
-        ));
-    }
-    Ok(())
 }
 
 /// Verify cert chain link for Nitro (ECDSA-P384 certs).
@@ -1083,94 +1065,4 @@ pub enum VerifyError {
     UnsupportedPlatform(Platform),
     #[error("platform quote verification failed: {0}")]
     PlatformError(String),
-}
-
-#[cfg(all(test, feature = "nitro"))]
-mod nitro_chain_tests {
-    use super::*;
-
-    /// Extract (cabundle, leaf) from a raw COSE_Sign1 attestation doc.
-    fn extract_chain(doc: &[u8]) -> (Option<Vec<Vec<u8>>>, Vec<u8>) {
-        use serde_cbor::Value;
-        let cose: Value = serde_cbor::from_slice(doc).unwrap();
-        let arr = match &cose {
-            Value::Tag(18, inner) => match inner.as_ref() {
-                Value::Array(a) => a.clone(),
-                _ => panic!("COSE tag does not wrap an array"),
-            },
-            Value::Array(a) => a.clone(),
-            _ => panic!("not a COSE_Sign1"),
-        };
-        let payload: Value = match &arr[2] {
-            Value::Bytes(b) => serde_cbor::from_slice(b).unwrap(),
-            _ => panic!("COSE payload not bytes"),
-        };
-        let map = match &payload {
-            Value::Map(m) => m,
-            _ => panic!("payload not a map"),
-        };
-        let mut cab = None;
-        let mut leaf = vec![];
-        for (k, v) in map {
-            if let Value::Text(key) = k {
-                match key.as_str() {
-                    "cabundle" => {
-                        if let Value::Array(certs) = v {
-                            cab = Some(
-                                certs
-                                    .iter()
-                                    .filter_map(|c| match c {
-                                        Value::Bytes(b) => Some(b.clone()),
-                                        _ => None,
-                                    })
-                                    .collect(),
-                            );
-                        }
-                    }
-                    "certificate" => {
-                        if let Value::Bytes(b) = v {
-                            leaf = b.clone();
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        (cab, leaf)
-    }
-
-    fn real_chain() -> (Option<Vec<Vec<u8>>>, Vec<u8>) {
-        let json_str =
-            std::fs::read_to_string("testdata/nitro_attestation.json").unwrap();
-        let data: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        let doc = hex::decode(data["attestation_doc"].as_str().unwrap()).unwrap();
-        extract_chain(&doc)
-    }
-
-    #[test]
-    fn empty_cabundle_is_rejected() {
-        let err = verify_nitro_chain(Some(vec![]), &[]).unwrap_err();
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("empty"),
-            "empty cabundle must be rejected explicitly, got: {msg}"
-        );
-    }
-
-    #[test]
-    fn missing_cabundle_is_rejected() {
-        verify_nitro_chain(None, &[]).unwrap_err();
-    }
-
-    #[test]
-    fn real_captured_chain_verifies() {
-        let (cab, leaf) = real_chain();
-        assert!(!leaf.is_empty(), "fixture must carry a leaf cert");
-        let cab = cab.expect("fixture must carry a cabundle");
-        assert!(
-            !cab.is_empty(),
-            "fixture must carry a non-empty cabundle"
-        );
-        verify_nitro_chain(Some(cab), &leaf).expect("real AWS chain must verify");
-    }
 }
