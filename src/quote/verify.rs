@@ -991,3 +991,226 @@ pub enum VerifyError {
     #[error("platform quote verification failed: {0}")]
     PlatformError(String),
 }
+
+#[cfg(all(test, feature = "nitro"))]
+mod nitro_chain_tests {
+    //! Regression cover for the Nitro certificate-chain gate.
+    //!
+    //! `v2/src/quote/verify.rs` carries the same tests against the same bug.
+    //! Keep the two in sync: this crate is the legacy verifier, and the empty
+    //! cabundle bypass existed here identically. Tests live on both sides so
+    //! neither copy can regress silently.
+
+    use super::*;
+    use p384::ecdsa::{signature::Signer, Signature, SigningKey};
+    use serde_cbor::Value;
+
+    /// A real Nitro attestation document captured from hardware
+    /// (`testdata/nitro_attestation.json`), plus its COSE protected header,
+    /// payload map and the ed25519 pubkey its `user_data` commits to.
+    struct RealDoc {
+        protected: Vec<u8>,
+        payload: Vec<(Value, Value)>,
+        pubkey: [u8; 32],
+        raw: Vec<u8>,
+    }
+
+    fn load_real_doc() -> RealDoc {
+        let json_str = std::fs::read_to_string("testdata/nitro_attestation.json")
+            .expect("testdata/nitro_attestation.json");
+        let data: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let raw = hex::decode(data["attestation_doc"].as_str().unwrap()).unwrap();
+        let pubkey: [u8; 32] = hex::decode(data["pubkey"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+
+        let cose: Value = serde_cbor::from_slice(&raw).unwrap();
+        let arr = match &cose {
+            Value::Tag(18, inner) => match inner.as_ref() {
+                Value::Array(a) => a.clone(),
+                _ => panic!("COSE_Sign1: not array inside tag"),
+            },
+            Value::Array(a) => a.clone(),
+            _ => panic!("not a COSE_Sign1"),
+        };
+        let protected = match &arr[0] {
+            Value::Bytes(b) => b.clone(),
+            _ => panic!("protected header not bytes"),
+        };
+        let payload_bytes = match &arr[2] {
+            Value::Bytes(b) => b.clone(),
+            _ => panic!("payload not bytes"),
+        };
+        let payload = match serde_cbor::from_slice::<Value>(&payload_bytes).unwrap() {
+            Value::Map(m) => m.into_iter().collect::<Vec<_>>(),
+            _ => panic!("payload not a map"),
+        };
+
+        RealDoc {
+            protected,
+            payload,
+            pubkey,
+            raw,
+        }
+    }
+
+    fn field(payload: &[(Value, Value)], name: &str) -> Vec<u8> {
+        payload
+            .iter()
+            .find(|(k, _)| matches!(k, Value::Text(t) if t == name))
+            .map(|(_, v)| match v {
+                Value::Bytes(b) => b.clone(),
+                _ => panic!("{name} not bytes"),
+            })
+            .unwrap_or_else(|| panic!("{name} missing from payload"))
+    }
+
+    /// Mint a Nitro attestation document signed by an attacker-held P-384 key,
+    /// with attacker-chosen PCRs and `cabundle` set to whatever `cabundle`
+    /// says — `Some(vec![])` for an empty bundle, `None` to omit the field.
+    ///
+    /// The attacker's public key is spliced into the real leaf cert DER so the
+    /// forged document carries a parseable cert we hold the key for. The
+    /// cert's own signature is left invalid on purpose: on the no-path-to-root
+    /// cases below nothing ever checks it, which is exactly the point.
+    ///
+    /// Returns the document plus the `(pubkey, value_x)` pair it commits to in
+    /// `user_data`, so the caller can hand the verifier a binding that
+    /// *matches* — every check before the cabundle gate passes, isolating the
+    /// gate as the only thing standing between an attacker and a forged
+    /// "verified" quote.
+    fn forge_doc(cabundle: Option<Vec<Vec<u8>>>) -> (Vec<u8>, [u8; 32], [u8; 48]) {
+        let real = load_real_doc();
+
+        let sk = SigningKey::random(&mut rand::rngs::OsRng);
+        let vk_point = sk.verifying_key().to_encoded_point(false);
+        let attacker_pk = vk_point.as_bytes();
+
+        let real_cert = field(&real.payload, "certificate");
+        let real_pk = {
+            use der::Decode;
+            x509_cert::Certificate::from_der(&real_cert)
+                .unwrap()
+                .tbs_certificate
+                .subject_public_key_info
+                .subject_public_key
+                .raw_bytes()
+                .to_vec()
+        };
+        assert_eq!(attacker_pk.len(), real_pk.len(), "SEC1 P-384 point length");
+        let pos = real_cert
+            .windows(real_pk.len())
+            .position(|w| w == real_pk.as_slice())
+            .expect("leaf public key not found in cert DER");
+        let mut forged_cert = real_cert.clone();
+        forged_cert[pos..pos + attacker_pk.len()].copy_from_slice(attacker_pk);
+
+        // Attacker-chosen identity and measurement, bound the way this crate
+        // expects: user_data == sha256(pubkey || value_x).
+        let quote_pubkey = [0x42u8; 32];
+        let value_x = [0x43u8; 48];
+        let user_data = {
+            let mut preimage = Vec::with_capacity(32 + 48);
+            preimage.extend_from_slice(&quote_pubkey);
+            preimage.extend_from_slice(&value_x);
+            Sha256::digest(&preimage).to_vec()
+        };
+
+        let mut entries = vec![
+            (
+                Value::Text("module_id".into()),
+                Value::Text("i-attacker-enc0000".into()),
+            ),
+            (Value::Text("digest".into()), Value::Text("SHA384".into())),
+            (
+                Value::Text("pcrs".into()),
+                Value::Map(
+                    vec![(Value::Integer(0), Value::Bytes(vec![0xaa; 48]))]
+                        .into_iter()
+                        .collect(),
+                ),
+            ),
+            (Value::Text("user_data".into()), Value::Bytes(user_data)),
+            (Value::Text("certificate".into()), Value::Bytes(forged_cert)),
+        ];
+        if let Some(cab) = cabundle {
+            entries.push((
+                Value::Text("cabundle".into()),
+                Value::Array(cab.into_iter().map(Value::Bytes).collect()),
+            ));
+        }
+        let forged_payload = Value::Map(entries.into_iter().collect());
+        let forged_payload_bytes = serde_cbor::to_vec(&forged_payload).unwrap();
+
+        // Sign the COSE Sig_structure with the attacker key, so the
+        // COSE_Sign1 check against the embedded leaf cert passes.
+        let sig_structure = Value::Array(vec![
+            Value::Text("Signature1".into()),
+            Value::Bytes(real.protected.clone()),
+            Value::Bytes(vec![]),
+            Value::Bytes(forged_payload_bytes.clone()),
+        ]);
+        let sig: Signature = sk.sign(&serde_cbor::to_vec(&sig_structure).unwrap());
+
+        let forged_doc = serde_cbor::to_vec(&Value::Tag(
+            18,
+            Box::new(Value::Array(vec![
+                Value::Bytes(real.protected),
+                Value::Map(Default::default()),
+                Value::Bytes(forged_payload_bytes),
+                Value::Bytes(sig.to_bytes().to_vec()),
+            ])),
+        ))
+        .unwrap();
+
+        (forged_doc, quote_pubkey, value_x)
+    }
+
+    /// Positive control: the captured hardware document still verifies
+    /// end-to-end — COSE signature, full cabundle chain, pinned root.
+    ///
+    /// This doc predates the `sha256(pubkey || value_x)` binding, so it
+    /// matches via the legacy `sha256(pubkey)` fallback and `value_x` is
+    /// unconstrained here.
+    #[test]
+    fn real_nitro_doc_verifies() {
+        let doc = load_real_doc();
+        let (valid, pcrs) = verify_nitro_quote(&doc.raw, &doc.pubkey, &[0u8; 48])
+            .expect("captured hardware Nitro doc must verify");
+        assert!(valid);
+        assert!(!pcrs.is_empty(), "should have extracted PCRs");
+    }
+
+    /// A document signed by an attacker-held P-384 key with `cabundle: []`
+    /// must be rejected. Before the fix the chain checks and root pinning were
+    /// wrapped in `if !cab.is_empty()`, so an empty cabundle skipped them and
+    /// the verifier returned Ok with attacker-chosen PCRs.
+    #[test]
+    fn forged_doc_with_empty_cabundle_is_rejected() {
+        let (forged_doc, pubkey, value_x) = forge_doc(Some(vec![]));
+
+        let err = verify_nitro_quote(&forged_doc, &pubkey, &value_x)
+            .expect_err("forged Nitro doc with empty cabundle must be rejected");
+        assert!(
+            err.to_string().contains("empty cabundle"),
+            "unexpected rejection reason: {err}"
+        );
+    }
+
+    /// The other half of the fail-closed gate: a document with no `cabundle`
+    /// field at all. This path predates the fix (the `ok_or_else` has always
+    /// been there), so this test exists to pin it — missing and empty must
+    /// both fail closed, and neither should regress into a skip.
+    #[test]
+    fn forged_doc_with_missing_cabundle_is_rejected() {
+        let (forged_doc, pubkey, value_x) = forge_doc(None);
+
+        let err = verify_nitro_quote(&forged_doc, &pubkey, &value_x)
+            .expect_err("forged Nitro doc with no cabundle field must be rejected");
+        assert!(
+            err.to_string().contains("no cabundle"),
+            "unexpected rejection reason: {err}"
+        );
+    }
+}

@@ -1082,6 +1082,7 @@ pub enum VerifyError {
 #[cfg(all(test, feature = "nitro"))]
 mod nitro_chain_tests {
     use super::*;
+    use p384::ecdsa::{signature::Signer, Signature, SigningKey};
     use serde_cbor::Value;
 
     /// A real Nitro attestation document captured from hardware
@@ -1145,28 +1146,22 @@ mod nitro_chain_tests {
             .unwrap_or_else(|| panic!("{name} missing from payload"))
     }
 
-    /// Positive control: the captured hardware document still verifies
-    /// end-to-end — COSE signature, full cabundle chain, pinned root.
-    #[test]
-    fn real_nitro_doc_verifies() {
-        let doc = load_real_doc();
-        verify_platform_quote(Platform::Nitro, &doc.raw, &doc.binding)
-            .expect("captured hardware Nitro doc must verify");
-    }
-
-    /// A document signed by an attacker-held P-384 key with `cabundle: []`
-    /// must be rejected. Before the fix the chain checks and root pinning were
-    /// wrapped in `if !cab.is_empty()`, so an empty cabundle skipped them and
-    /// the verifier returned Ok with attacker-chosen PCRs.
-    #[test]
-    fn forged_doc_with_empty_cabundle_is_rejected() {
-        use p384::ecdsa::{signature::Signer, Signature, SigningKey};
-
+    /// Mint a Nitro attestation document signed by an attacker-held P-384 key,
+    /// with attacker-chosen PCRs and `cabundle` set to whatever `cabundle`
+    /// says — `Some(vec![])` for an empty bundle, `None` to omit the field.
+    ///
+    /// The attacker's public key is spliced into the real leaf cert DER so the
+    /// forged document carries a parseable cert we hold the key for. The
+    /// cert's own signature is left invalid on purpose: on the no-path-to-root
+    /// cases below nothing ever checks it, which is exactly the point.
+    ///
+    /// Returns the encoded document and the binding it commits to, so the
+    /// caller can hand the verifier a binding that *matches* — every check
+    /// before the cabundle gate passes, isolating the gate as the only thing
+    /// standing between an attacker and a forged "verified" quote.
+    fn forge_doc(cabundle: Option<Vec<Vec<u8>>>) -> (Vec<u8>, [u8; 32]) {
         let real = load_real_doc();
 
-        // Attacker key. Splice its public key into the real leaf cert DER so
-        // the forged document carries a parseable cert we hold the key for —
-        // the cert's own signature is irrelevant on the empty-cabundle path.
         let sk = SigningKey::random(&mut rand::rngs::OsRng);
         let vk_point = sk.verifying_key().to_encoded_point(false);
         let attacker_pk = vk_point.as_bytes();
@@ -1195,28 +1190,30 @@ mod nitro_chain_tests {
         let mut user_data = vec![0u8; 64];
         user_data[..32].copy_from_slice(&binding);
 
-        let forged_payload = Value::Map(
-            vec![
-                (
-                    Value::Text("module_id".into()),
-                    Value::Text("i-attacker-enc0000".into()),
+        let mut entries = vec![
+            (
+                Value::Text("module_id".into()),
+                Value::Text("i-attacker-enc0000".into()),
+            ),
+            (Value::Text("digest".into()), Value::Text("SHA384".into())),
+            (
+                Value::Text("pcrs".into()),
+                Value::Map(
+                    vec![(Value::Integer(0), Value::Bytes(vec![0xaa; 48]))]
+                        .into_iter()
+                        .collect(),
                 ),
-                (Value::Text("digest".into()), Value::Text("SHA384".into())),
-                (
-                    Value::Text("pcrs".into()),
-                    Value::Map(
-                        vec![(Value::Integer(0), Value::Bytes(vec![0xaa; 48]))]
-                            .into_iter()
-                            .collect(),
-                    ),
-                ),
-                (Value::Text("user_data".into()), Value::Bytes(user_data)),
-                (Value::Text("certificate".into()), Value::Bytes(forged_cert)),
-                (Value::Text("cabundle".into()), Value::Array(vec![])),
-            ]
-            .into_iter()
-            .collect(),
-        );
+            ),
+            (Value::Text("user_data".into()), Value::Bytes(user_data)),
+            (Value::Text("certificate".into()), Value::Bytes(forged_cert)),
+        ];
+        if let Some(cab) = cabundle {
+            entries.push((
+                Value::Text("cabundle".into()),
+                Value::Array(cab.into_iter().map(Value::Bytes).collect()),
+            ));
+        }
+        let forged_payload = Value::Map(entries.into_iter().collect());
         let forged_payload_bytes = serde_cbor::to_vec(&forged_payload).unwrap();
 
         // Sign the COSE Sig_structure with the attacker key, so the
@@ -1240,10 +1237,46 @@ mod nitro_chain_tests {
         ))
         .unwrap();
 
+        (forged_doc, binding)
+    }
+
+    /// Positive control: the captured hardware document still verifies
+    /// end-to-end — COSE signature, full cabundle chain, pinned root.
+    #[test]
+    fn real_nitro_doc_verifies() {
+        let doc = load_real_doc();
+        verify_platform_quote(Platform::Nitro, &doc.raw, &doc.binding)
+            .expect("captured hardware Nitro doc must verify");
+    }
+
+    /// A document signed by an attacker-held P-384 key with `cabundle: []`
+    /// must be rejected. Before the fix the chain checks and root pinning were
+    /// wrapped in `if !cab.is_empty()`, so an empty cabundle skipped them and
+    /// the verifier returned Ok with attacker-chosen PCRs.
+    #[test]
+    fn forged_doc_with_empty_cabundle_is_rejected() {
+        let (forged_doc, binding) = forge_doc(Some(vec![]));
+
         let err = verify_platform_quote(Platform::Nitro, &forged_doc, &binding)
             .expect_err("forged Nitro doc with empty cabundle must be rejected");
         assert!(
-            err.to_string().contains("cabundle"),
+            err.to_string().contains("empty cabundle"),
+            "unexpected rejection reason: {err}"
+        );
+    }
+
+    /// The other half of the fail-closed gate: a document with no `cabundle`
+    /// field at all. This path predates the fix (the `ok_or_else` has always
+    /// been there), so this test exists to pin it — missing and empty must
+    /// both fail closed, and neither should regress into a skip.
+    #[test]
+    fn forged_doc_with_missing_cabundle_is_rejected() {
+        let (forged_doc, binding) = forge_doc(None);
+
+        let err = verify_platform_quote(Platform::Nitro, &forged_doc, &binding)
+            .expect_err("forged Nitro doc with no cabundle field must be rejected");
+        assert!(
+            err.to_string().contains("no cabundle"),
             "unexpected rejection reason: {err}"
         );
     }
