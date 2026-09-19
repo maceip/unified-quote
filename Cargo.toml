@@ -66,3 +66,7 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+# The Nitro chain tests mint a forged attestation doc with an attacker-held
+# P-384 key. p384 is optional in [dependencies] (sev-snp/mobile), so pull it in
+# unconditionally for tests — otherwise `--features nitro` alone won't compile.
+p384 = { version = "0.13", features = ["ecdsa"] }
