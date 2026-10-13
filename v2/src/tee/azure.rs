@@ -72,11 +72,14 @@ pub struct AzureBundle {
     pub tls_spki: Option<String>,
 }
 
-/// Result of verifying an Azure HCL report.
+/// Cryptographic inspection of an Azure HCL report. This is never admission:
+/// fresh AK challenges, current collateral and independent launch/TCB policy
+/// are not represented by this legacy evidence format/API.
 #[derive(Debug, serde::Serialize)]
 pub struct AzureVerdict {
-    /// "verified" when the SNP signature **and** AMD chain both check out.
+    /// `signature_inspected` when the SNP signature and AMD chain check out.
     pub verdict: String,
+    admission: bool,
     /// Launch MEASUREMENT (hex) from the SNP report.
     pub measurement: String,
     /// REPORT_DATA (hex) — equals sha256(runtime) in [0..32].
@@ -99,6 +102,20 @@ pub struct AzureVerdict {
     /// The bound source/artifact identity (hex), echoed from the quote.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value_x: Option<String>,
+}
+
+impl AzureVerdict {
+    pub fn is_admitted(&self) -> bool {
+        self.admission
+    }
+}
+
+pub const INSPECTION_VERDICT: &str = "signature_inspected";
+
+/// This legacy format has no complete independent admission policy adapter.
+/// Reject before network access, credential issuance or server activation.
+pub fn require_admission_support() -> Result<(), String> {
+    Err("Legacy Azure HCL admission is unsupported; use the explicit azure-snp-vtpm composite profile with independent Azure and AMD policies; signature inspection cannot authorize serving or admission".into())
 }
 
 /// Split a raw HCL blob into the SNP report and the runtime-data JSON.
@@ -134,8 +151,8 @@ pub fn parse_hcl(hcl: &[u8]) -> Result<AzureEvidence, String> {
     })
 }
 
-/// Verify a raw HCL report: AMD-rooted SNP signature/chain plus the
-/// `REPORT_DATA == sha256(runtime)` binding that endorses the vTPM AK.
+/// Inspect AMD-rooted SNP signature/chain and the runtime binding. The result
+/// explicitly denies admission even when these cryptographic checks pass.
 pub fn verify_hcl(hcl: &[u8]) -> Result<AzureVerdict, String> {
     let ev = parse_hcl(hcl)?;
 
@@ -177,13 +194,14 @@ pub fn verify_hcl(hcl: &[u8]) -> Result<AzureVerdict, String> {
 
     let (ak_kid, vm_unique_id) = parse_runtime_meta(&ev.runtime);
     let verdict = if sig_verified && chain_verified {
-        "verified"
+        INSPECTION_VERDICT
     } else {
         "fail"
     };
 
     Ok(AzureVerdict {
         verdict: verdict.into(),
+        admission: false,
         measurement,
         report_data: hex::encode(report_data),
         runtime_sha256: hex::encode(expected),
@@ -306,8 +324,8 @@ fn verify_ak_quote(
         .map_err(|_| "AK quote signature did not verify (RSASSA/SHA-256)".to_string())
 }
 
-/// Verify a full Azure bundle: HCL report → AMD root, plus (if present) the
-/// AK-signed quote binding `value_x` to the SNP-endorsed vTPM AK.
+/// Inspect an Azure bundle's HCL signature and, if present, its AK-signed
+/// `value_x` binding. This function never admits an endpoint or workload.
 pub fn verify_bundle(bundle: &AzureBundle) -> Result<AzureVerdict, String> {
     let hcl = hex::decode(&bundle.hcl).map_err(|e| format!("bundle.hcl hex: {e}"))?;
     let mut verdict = verify_hcl(&hcl)?;
@@ -325,9 +343,9 @@ pub fn verify_bundle(bundle: &AzureBundle) -> Result<AzureVerdict, String> {
             verify_ak_quote(&ev.runtime, &msg, &sig, &binding)?;
             verdict.value_x_bound = Some(true);
             verdict.value_x = Some(vx_hex.clone());
-            // A bound bundle is only "verified" if BOTH the AMD chain and the
+            // A bound bundle passes signature inspection only if the AMD chain and the
             // value_x binding hold.
-            if verdict.verdict != "verified" {
+            if verdict.verdict != INSPECTION_VERDICT {
                 verdict.verdict = "fail".into();
             }
         }
@@ -405,10 +423,11 @@ pub fn collect_attested_cert(
     Ok((cert, bundle))
 }
 
-/// Verify an attested-TLS leaf cert: extract the embedded `AzureBundle`, confirm
+/// Inspect an attested-TLS leaf cert: extract the embedded `AzureBundle`, confirm
 /// the cert SPKI matches the bundle's `tls_spki` (channel binding), verify the
 /// HCL report to the AMD root, and confirm the AK quote binds
-/// `sha256(cert_spki || value_x)`.
+/// `sha256(cert_spki || value_x)`. This checks a binding but supplies no fresh
+/// relying-party challenge, current collateral or independent admission policy.
 pub fn verify_attested_cert(cert_der: &[u8]) -> Result<AzureVerdict, String> {
     use crate::net::attested_tls::{extract_eat_from_cert, spki_hash_of_cert};
     let payload = extract_eat_from_cert(cert_der)
@@ -455,7 +474,7 @@ pub fn verify_attested_cert(cert_der: &[u8]) -> Result<AzureVerdict, String> {
 
     verdict.value_x_bound = Some(true);
     verdict.value_x = Some(vx_hex.clone());
-    if verdict.verdict != "verified" {
+    if verdict.verdict != INSPECTION_VERDICT {
         verdict.verdict = "fail".into();
     }
     Ok(verdict)

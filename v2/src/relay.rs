@@ -220,15 +220,33 @@ pub struct VerifiedRelayTee {
 }
 
 impl VerifiedRelayTee {
-    pub fn from_eat(eat_cbor: &[u8]) -> Result<Self, RelayError> {
+    /// Admit the relay against independently configured challenge, TLS key,
+    /// measurements, current collateral and TCB policy. A receipt cannot supply
+    /// its own approval policy.
+    pub fn from_eat(
+        eat_cbor: &[u8],
+        verifier: &crate::AttestationVerifier,
+    ) -> Result<Self, RelayError> {
         let token = crate::eat::EatToken::from_cbor(eat_cbor)
             .map_err(|e| RelayError::TeeAttestation(format!("EAT decode: {e}")))?;
-        let platform = token.platform_enum().ok_or_else(|| {
-            RelayError::TeeAttestation(format!("unknown platform {}", token.platform))
-        })?;
-        let expected = token.binding_bytes();
-        crate::quote::verify::verify_platform_quote(platform, &token.platform_quote, &expected)
-            .map_err(|e| RelayError::TeeAttestation(format!("platform quote: {e}")))?;
+        if !matches!(token.binding_suite, 1 | 2) {
+            return Err(RelayError::TeeAttestation(
+                "relay admission requires a full 64-byte report-data binding".into(),
+            ));
+        }
+        let verdict = verifier.verify(&token);
+        if !verdict.is_valid() {
+            return Err(RelayError::TeeAttestation(format!(
+                "relay admission rejected: {}",
+                verdict
+                    .checks
+                    .iter()
+                    .filter(|check| !check.passed)
+                    .map(|check| check.detail.as_str())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )));
+        }
         Ok(Self {
             value_x: token.value_x.to_vec(),
         })
@@ -263,6 +281,11 @@ impl VerifiedDeviceAttestation {
                 "desktop TPM verdict: {}",
                 verdict.verdict
             )));
+        }
+        if !verdict.ima_verified {
+            return Err(RelayError::DeviceAttestation(
+                "relay application identity requires the authenticated IMA measurement profile; a TPM signature alone does not authenticate build_digest".into(),
+            ));
         }
         let value_x = hex::decode(&verdict.identity_hash)
             .map_err(|e| RelayError::DeviceAttestation(format!("identity_hash: {e}")))?;
@@ -509,6 +532,46 @@ fn sig_from_slice(b: &[u8]) -> Result<Signature, RelayError> {
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
+
+    #[test]
+    fn relay_identity_requires_full_admission_not_receipt_claims() {
+        use p256::pkcs8::EncodePublicKey;
+        use sha2::Digest;
+        let spki = p256::SecretKey::from_slice(&[7; 32])
+            .unwrap()
+            .public_key()
+            .to_public_key_der()
+            .unwrap();
+        let verifier = crate::AttestationVerifier::builder()
+            .with_expected_nonce(&[4; 32])
+            .with_tls_spki_der(spki.as_bytes())
+            .with_expected_value_x(&[1; 48])
+            .with_expected_platform_measurement(&[9; 48])
+            .require_platform(crate::Platform::Nitro)
+            .build()
+            .unwrap();
+        let mut token = crate::eat::EatToken::from_build_with_nonce(
+            crate::eat::BuildComponents {
+                platform: crate::Platform::Nitro,
+                value_x: [1; 48],
+                source_hash: [2; 48],
+                artifact_hash: [3; 48],
+                platform_measurement: vec![9; 48],
+                platform_quote: vec![],
+            },
+            [4; 32],
+        );
+        token.tls_spki_hash = sha2::Sha256::digest(spki.as_bytes()).into();
+        let legacy = VerifiedRelayTee::from_eat(&token.to_cbor().unwrap(), &verifier).unwrap_err();
+        assert!(legacy.to_string().contains("64-byte"));
+        token.binding_suite = crate::eat::BINDING_SUITE_V3_SHA256_DUAL;
+        let unsigned =
+            VerifiedRelayTee::from_eat(&token.to_cbor().unwrap(), &verifier).unwrap_err();
+        assert!(unsigned.to_string().contains("admission rejected"));
+        token.eat_nonce = [5; 32];
+        let replay = VerifiedRelayTee::from_eat(&token.to_cbor().unwrap(), &verifier).unwrap_err();
+        assert!(replay.to_string().contains("nonce"));
+    }
 
     fn key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])

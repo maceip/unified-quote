@@ -1,7 +1,7 @@
 //! Platform-specific TEE quote verification.
 //!
 //! Verifies raw platform quotes from Nitro, SNP, and TDX:
-//!   - ECDSA signature chain (P-384 for Nitro/SNP, P-256 for TDX)
+//!   - Platform signatures (P-384 for Nitro/SNP, P-256 for TDX)
 //!   - Certificate chain validation back to pinned vendor root CA
 //!   - report_data binding (proves specific data was committed to the quote)
 //!
@@ -10,21 +10,44 @@
 use super::Platform;
 use sha2::{Digest, Sha256};
 
+#[path = "pki.rs"]
+pub(crate) mod pki;
+
 /// Verify a raw platform quote: signature chain + report_data binding.
 ///
 /// `expected_binding` is the EAT `binding_bytes()` value committed to
 /// report_data[0..32] by the producer before quote collection.
 ///
-/// Returns Ok(measurements) if the quote is genuine and binds to the expected data.
+/// Returns authenticated measurements after signature, PKIX, and binding checks.
+/// This primitive does not appraise Intel/AMD TCB collateral. Admission callers
+/// must use `verify_platform_quote_for_admission` with independent policy.
 pub fn verify_platform_quote(
     platform: Platform,
     raw_quote: &[u8],
     expected_binding: &[u8; 32],
 ) -> Result<Vec<(String, Vec<u8>)>, VerifyError> {
+    let now = trusted_now()?;
+    verify_platform_quote_at(platform, raw_quote, expected_binding, now)
+}
+
+/// Cryptographic verification at an explicitly supplied trusted clock. Intended
+/// for archival interoperability checks, not current platform admission.
+/// The caller must not take this time from untrusted evidence.
+pub fn verify_platform_quote_at(
+    platform: Platform,
+    raw_quote: &[u8],
+    expected_binding: &[u8; 32],
+    now: u64,
+) -> Result<Vec<(String, Vec<u8>)>, VerifyError> {
+    if raw_quote.is_empty() || raw_quote.len() > 8 * 1024 * 1024 {
+        return Err(VerifyError::PlatformError(
+            "CPU quote size outside limit".into(),
+        ));
+    }
     match platform {
         #[cfg(feature = "nitro")]
         Platform::Nitro => {
-            let (valid, measurements) = verify_nitro_quote(raw_quote, expected_binding)?;
+            let (valid, measurements) = verify_nitro_quote(raw_quote, expected_binding, now)?;
             if !valid {
                 return Err(VerifyError::PlatformError(
                     "Nitro: platform signature chain did not verify".into(),
@@ -34,7 +57,7 @@ pub fn verify_platform_quote(
         }
         #[cfg(feature = "sev-snp")]
         Platform::SevSnp => {
-            let (valid, measurements) = verify_snp_quote_raw(raw_quote, expected_binding)?;
+            let (valid, measurements) = verify_snp_quote(raw_quote, expected_binding, now, None)?;
             if !valid {
                 return Err(VerifyError::PlatformError(
                     "SNP: platform signature chain did not verify".into(),
@@ -44,7 +67,7 @@ pub fn verify_platform_quote(
         }
         #[cfg(feature = "tdx")]
         Platform::Tdx => {
-            let (valid, measurements) = verify_tdx_quote_raw(raw_quote, expected_binding)?;
+            let (valid, measurements) = verify_tdx_quote(raw_quote, expected_binding, now)?;
             if !valid {
                 return Err(VerifyError::PlatformError(
                     "TDX: platform signature chain did not verify".into(),
@@ -57,142 +80,150 @@ pub fn verify_platform_quote(
     }
 }
 
-// ============================================================================
-// X.509 cert chain helpers (shared across platforms)
-// ============================================================================
+/// Independently signed vendor collateral. No network retrieval is performed by
+/// admission verification; supply bounded captured collateral from a trusted service.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "platform",
+    content = "collateral",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum CpuCollateral {
+    #[cfg(feature = "tdx")]
+    IntelTdx(super::tdx_collateral::TdxCollateral),
+    #[cfg(feature = "sev-snp")]
+    AmdSnp(super::snp_collateral::SnpCollateral),
+}
 
-/// Verify that `subject` cert was signed by `issuer` cert using ECDSA-P384.
-#[cfg(feature = "sev-snp")]
-/// Verify that `subject`'s certificate signature was produced by `issuer`'s key,
-/// dispatching on the signature algorithm. AMD's SNP cert chain mixes algorithms:
-/// the ARK/ASK/ASVK are RSA-4096 (RSASSA-PSS, SHA-384) while VCEK/VLEK leaves are
-/// ECDSA P-384. A P-384-only chain check therefore cannot validate the path to
-/// the AMD root.
-fn verify_cert_sig(issuer_der: &[u8], subject_der: &[u8]) -> Result<bool, VerifyError> {
-    use der::{Decode, Encode};
-    use x509_cert::Certificate;
+/// Verifier-owned minimum security versions; never deserialize this policy from
+/// the attester's bundle or confuse it with vendor-signed collateral.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "platform",
+    content = "policy",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum CpuTcbPolicy {
+    #[cfg(feature = "tdx")]
+    IntelTdx {
+        minimum_tcb_evaluation_data_number: u64,
+    },
+    #[cfg(feature = "sev-snp")]
+    AmdSnp(super::snp_collateral::SnpTcbPolicy),
+}
 
-    let issuer = Certificate::from_der(issuer_der)
-        .map_err(|e| VerifyError::PlatformError(format!("parse issuer cert: {e}")))?;
-    let subject = Certificate::from_der(subject_der)
-        .map_err(|e| VerifyError::PlatformError(format!("parse subject cert: {e}")))?;
-
-    let issuer_pk = issuer
-        .tbs_certificate
-        .subject_public_key_info
-        .subject_public_key
-        .raw_bytes();
-    let tbs_der = subject
-        .tbs_certificate
-        .to_der()
-        .map_err(|e| VerifyError::PlatformError(format!("re-encode TBS: {e}")))?;
-    let sig_bytes = subject.signature.raw_bytes();
-    let sig_alg = subject.signature_algorithm.oid.to_string();
-
-    match sig_alg.as_str() {
-        // ecdsa-with-SHA384
-        "1.2.840.10045.4.3.3" => {
-            use p384::ecdsa::{self, signature::hazmat::PrehashVerifier};
-            use sha2::Sha384;
-            let vk = ecdsa::VerifyingKey::from_sec1_bytes(issuer_pk)
-                .map_err(|e| VerifyError::PlatformError(format!("issuer P-384 key: {e}")))?;
-            let sig = ecdsa::DerSignature::from_bytes(sig_bytes)
-                .map_err(|e| VerifyError::PlatformError(format!("parse cert sig: {e}")))?;
-            let digest = Sha384::digest(&tbs_der);
-            vk.verify_prehash(&digest, &sig)
-                .map_err(|e| VerifyError::PlatformError(format!("ecdsa cert verify: {e}")))?;
-            Ok(true)
-        }
-        // rsassaPss — AMD ARK/ASK/ASVK (RSA-4096, SHA-384, MGF1-SHA384, salt 48)
-        "1.2.840.113549.1.1.10" => {
-            use rsa::pkcs1::DecodeRsaPublicKey;
-            use rsa::pss::{Signature, VerifyingKey};
-            use rsa::signature::Verifier;
-            use sha2::Sha384;
-            let pk = rsa::RsaPublicKey::from_pkcs1_der(issuer_pk)
-                .map_err(|e| VerifyError::PlatformError(format!("issuer RSA key: {e}")))?;
-            let vk = VerifyingKey::<Sha384>::new(pk);
-            let sig = Signature::try_from(sig_bytes)
-                .map_err(|e| VerifyError::PlatformError(format!("parse RSA-PSS sig: {e}")))?;
-            vk.verify(&tbs_der, &sig)
-                .map_err(|e| VerifyError::PlatformError(format!("rsa-pss cert verify: {e}")))?;
-            Ok(true)
-        }
-        other => Err(VerifyError::PlatformError(format!(
-            "unsupported cert signature algorithm OID {other}"
-        ))),
+/// Current-clock CPU admission: quote authenticity and nonce/key binding plus
+/// authenticated, fresh vendor collateral and independent TCB policy.
+pub fn verify_platform_quote_for_admission(
+    platform: Platform,
+    raw_quote: &[u8],
+    expected_binding: &[u8; 32],
+    collateral: Option<&CpuCollateral>,
+    policy: Option<&CpuTcbPolicy>,
+) -> Result<Vec<(String, Vec<u8>)>, VerifyError> {
+    if raw_quote.is_empty() || raw_quote.len() > 8 * 1024 * 1024 {
+        return Err(VerifyError::PlatformError(
+            "CPU quote size outside limit".into(),
+        ));
     }
-}
-
-fn verify_cert_chain_p384(issuer_der: &[u8], subject_der: &[u8]) -> Result<bool, VerifyError> {
-    use der::{Decode, Encode};
-    use p384::ecdsa::{self, signature::hazmat::PrehashVerifier};
-    use sha2::Sha384;
-    use x509_cert::Certificate;
-
-    let issuer = Certificate::from_der(issuer_der)
-        .map_err(|e| VerifyError::PlatformError(format!("parse issuer cert: {e}")))?;
-    let subject = Certificate::from_der(subject_der)
-        .map_err(|e| VerifyError::PlatformError(format!("parse subject cert: {e}")))?;
-
-    let issuer_pk_bytes = issuer
-        .tbs_certificate
-        .subject_public_key_info
-        .subject_public_key
-        .raw_bytes();
-    let vk = ecdsa::VerifyingKey::from_sec1_bytes(issuer_pk_bytes)
-        .map_err(|e| VerifyError::PlatformError(format!("issuer P-384 key: {e}")))?;
-
-    let tbs_der = subject
-        .tbs_certificate
-        .to_der()
-        .map_err(|e| VerifyError::PlatformError(format!("re-encode TBS: {e}")))?;
-
-    let sig_bytes = subject.signature.raw_bytes();
-    let sig = ecdsa::DerSignature::from_bytes(sig_bytes)
-        .map_err(|e| VerifyError::PlatformError(format!("parse cert signature: {e}")))?;
-
-    let digest = Sha384::digest(&tbs_der);
-    vk.verify_prehash(&digest, &sig)
-        .map_err(|e| VerifyError::PlatformError(format!("cert chain sig verify: {e}")))?;
-
-    Ok(true)
-}
-
-/// Verify that `subject` cert was signed by `issuer` cert using ECDSA-P256.
-#[cfg(feature = "tdx")]
-fn verify_cert_chain_p256(issuer_der: &[u8], subject_der: &[u8]) -> Result<bool, VerifyError> {
-    use der::{Decode, Encode};
-    use p256::ecdsa::{self, signature::hazmat::PrehashVerifier};
-    use x509_cert::Certificate;
-
-    let issuer = Certificate::from_der(issuer_der)
-        .map_err(|e| VerifyError::PlatformError(format!("parse issuer cert: {e}")))?;
-    let subject = Certificate::from_der(subject_der)
-        .map_err(|e| VerifyError::PlatformError(format!("parse subject cert: {e}")))?;
-
-    let issuer_pk_bytes = issuer
-        .tbs_certificate
-        .subject_public_key_info
-        .subject_public_key
-        .raw_bytes();
-    let vk = ecdsa::VerifyingKey::from_sec1_bytes(issuer_pk_bytes)
-        .map_err(|e| VerifyError::PlatformError(format!("issuer P-256 key: {e}")))?;
-
-    let tbs_der = subject
-        .tbs_certificate
-        .to_der()
-        .map_err(|e| VerifyError::PlatformError(format!("re-encode TBS: {e}")))?;
-
-    let sig_bytes = subject.signature.raw_bytes();
-    let sig = ecdsa::DerSignature::from_bytes(sig_bytes)
-        .map_err(|e| VerifyError::PlatformError(format!("parse cert signature: {e}")))?;
-
-    let digest = Sha256::digest(&tbs_der);
-    vk.verify_prehash(&digest, &sig)
-        .map_err(|e| VerifyError::PlatformError(format!("cert chain sig verify: {e}")))?;
-
-    Ok(true)
+    let now = trusted_now()?;
+    match platform {
+        #[cfg(feature = "nitro")]
+        Platform::Nitro => {
+            if collateral.is_some() || policy.is_some() {
+                return Err(VerifyError::PlatformError(
+                    "CPU collateral/policy platform mismatch for Nitro".into(),
+                ));
+            }
+            let measurements =
+                verify_platform_quote_at(platform, raw_quote, expected_binding, now)?;
+            if !measurements
+                .iter()
+                .any(|(name, value)| name == "PCR0" && value.iter().any(|b| *b != 0))
+            {
+                return Err(VerifyError::PlatformError(
+                    "Nitro debug/zero launch measurement is forbidden".into(),
+                ));
+            }
+            Ok(measurements)
+        }
+        #[cfg(feature = "tdx")]
+        Platform::Tdx => {
+            let (
+                Some(CpuCollateral::IntelTdx(collateral)),
+                Some(CpuTcbPolicy::IntelTdx {
+                    minimum_tcb_evaluation_data_number,
+                }),
+            ) = (collateral, policy)
+            else {
+                return Err(VerifyError::PlatformError(
+                    "TDX admission requires Intel collateral and independent TCB policy".into(),
+                ));
+            };
+            if *minimum_tcb_evaluation_data_number == 0 {
+                return Err(VerifyError::PlatformError(
+                    "TDX TCB evaluation floor must be nonzero".into(),
+                ));
+            }
+            let measurements =
+                verify_platform_quote_at(platform, raw_quote, expected_binding, now)?;
+            if raw_quote[168] & 1 != 0
+                || !measurements
+                    .iter()
+                    .any(|(name, value)| name == "MRTD" && value.iter().any(|b| *b != 0))
+            {
+                return Err(VerifyError::PlatformError(
+                    "TDX debug/zero launch measurement is forbidden".into(),
+                ));
+            }
+            super::tdx_collateral::appraise_tdx(
+                raw_quote,
+                collateral,
+                now,
+                *minimum_tcb_evaluation_data_number,
+            )
+            .map_err(pki_error)?;
+            Ok(measurements)
+        }
+        #[cfg(feature = "sev-snp")]
+        Platform::SevSnp => {
+            let (Some(CpuCollateral::AmdSnp(collateral)), Some(CpuTcbPolicy::AmdSnp(policy))) =
+                (collateral, policy)
+            else {
+                return Err(VerifyError::PlatformError(
+                    "SNP admission requires AMD collateral and independent TCB policy".into(),
+                ));
+            };
+            collateral.validate_bounds().map_err(pki_error)?;
+            policy.validate().map_err(pki_error)?;
+            let (valid, measurements) = verify_snp_quote(
+                raw_quote,
+                expected_binding,
+                now,
+                Some((&collateral.certificate_chain, policy.product.name())),
+            )?;
+            if !valid {
+                return Err(VerifyError::PlatformError(
+                    "SNP quote signature/chain did not verify".into(),
+                ));
+            }
+            if !measurements
+                .iter()
+                .any(|(name, value)| name == "MEASUREMENT" && value.iter().any(|b| *b != 0))
+            {
+                return Err(VerifyError::PlatformError(
+                    "SNP zero launch measurement is forbidden".into(),
+                ));
+            }
+            super::snp_collateral::appraise_snp(raw_quote, collateral, policy, now)
+                .map_err(pki_error)?;
+            Ok(measurements)
+        }
+        #[allow(unreachable_patterns)]
+        _ => Err(VerifyError::UnsupportedPlatform(platform)),
+    }
 }
 
 // ============================================================================
@@ -215,6 +246,7 @@ fn verify_cert_chain_p256(issuer_der: &[u8], subject_der: &[u8]) -> Result<bool,
 fn verify_nitro_quote(
     raw_quote: &[u8],
     expected_binding: &[u8; 32],
+    now: u64,
 ) -> Result<(bool, Vec<(String, Vec<u8>)>), VerifyError> {
     use p384::ecdsa::{self, signature::hazmat::PrehashVerifier};
     use serde_cbor::Value;
@@ -237,9 +269,9 @@ fn verify_nitro_quote(
         _ => return Err(VerifyError::PlatformError("Not a COSE_Sign1".into())),
     };
 
-    if arr.len() < 4 {
+    if arr.len() != 4 {
         return Err(VerifyError::PlatformError(format!(
-            "COSE_Sign1 array too short: {} elements",
+            "COSE_Sign1 must have exactly four elements: {} elements",
             arr.len()
         )));
     }
@@ -253,6 +285,22 @@ fn verify_nitro_quote(
             ))
         }
     };
+    let protected: Value = serde_cbor::from_slice(&protected_bytes)
+        .map_err(|e| VerifyError::PlatformError(format!("Nitro protected header: {e}")))?;
+    match protected {
+        Value::Map(m)
+            if m.len() == 1 && m.get(&Value::Integer(1)) == Some(&Value::Integer(-35)) => {}
+        _ => {
+            return Err(VerifyError::PlatformError(
+                "Nitro requires protected ES384 and no unsupported headers".into(),
+            ))
+        }
+    }
+    if !matches!(&arr[1], Value::Map(m) if m.is_empty()) {
+        return Err(VerifyError::PlatformError(
+            "Nitro unsupported unprotected COSE headers".into(),
+        ));
+    }
 
     let payload_bytes = match &arr[2] {
         Value::Bytes(b) => b.clone(),
@@ -276,7 +324,6 @@ fn verify_nitro_quote(
     // Extract all fields
     let mut pcrs: Vec<(String, Vec<u8>)> = Vec::new();
     let mut user_data: Option<Vec<u8>> = None;
-    let mut public_key: Option<Vec<u8>> = None;
     let mut certificate: Option<Vec<u8>> = None;
     let mut cabundle: Option<Vec<Vec<u8>>> = None;
 
@@ -287,7 +334,16 @@ fn verify_nitro_quote(
                     if let Value::Map(pcr_map) = v {
                         for (idx, val) in pcr_map {
                             if let (Value::Integer(i), Value::Bytes(b)) = (idx, val) {
+                                if !(0..=31).contains(i) || b.len() != 48 {
+                                    return Err(VerifyError::PlatformError(
+                                        "Nitro invalid PCR index/digest width".into(),
+                                    ));
+                                }
                                 pcrs.push((format!("PCR{i}"), b.clone()));
+                            } else {
+                                return Err(VerifyError::PlatformError(
+                                    "Nitro invalid PCR entry".into(),
+                                ));
                             }
                         }
                     }
@@ -299,7 +355,11 @@ fn verify_nitro_quote(
                 }
                 "public_key" => {
                     if let Value::Bytes(b) = v {
-                        public_key = Some(b.clone());
+                        if b.len() > 4096 {
+                            return Err(VerifyError::PlatformError(
+                                "Nitro public key exceeds limit".into(),
+                            ));
+                        }
                     }
                 }
                 "certificate" => {
@@ -313,6 +373,10 @@ fn verify_nitro_quote(
                         for cert in certs {
                             if let Value::Bytes(b) = cert {
                                 bundle.push(b.clone());
+                            } else {
+                                return Err(VerifyError::PlatformError(
+                                    "Nitro certificate bundle entry is not DER bytes".into(),
+                                ));
                             }
                         }
                         cabundle = Some(bundle);
@@ -321,6 +385,13 @@ fn verify_nitro_quote(
                 _ => {}
             }
         }
+    }
+    if map.get(&Value::Text("digest".into())) != Some(&Value::Text("SHA384".into()))
+        || !pcrs.iter().any(|(name, _)| name == "PCR0")
+    {
+        return Err(VerifyError::PlatformError(
+            "Nitro missing SHA384/PCR0 claims".into(),
+        ));
     }
 
     // --- Binding check: user_data[0..32] == expected_binding ---
@@ -398,26 +469,21 @@ fn verify_nitro_quote(
         VerifyError::PlatformError("Nitro: no cabundle in attestation doc".into())
     })?;
 
-    // cabundle is ordered root-to-leaf: cab[0] is closest to root, cab[last] issued leaf
-    // Verify chain: cab[0] -> cab[1] -> ... -> cab[N] -> leaf_cert
-    if !cab.is_empty() {
-        // Verify cab[i] signed cab[i+1]
-        for i in 0..cab.len() - 1 {
-            verify_cert_chain_p384_nitro(&cab[i], &cab[i + 1])?;
-        }
-        // Verify cab[last] signed leaf_cert
-        verify_cert_chain_p384_nitro(cab.last().unwrap(), &leaf_cert_der)?;
-
-        // Verify root cert (cab[0]) is self-signed
-        verify_cert_chain_p384_nitro(&cab[0], &cab[0])?;
-
-        // Pin root CA fingerprint
-        if !super::roots::verify_root_fingerprint(&cab[0], super::roots::AWS_NITRO_ROOT_SHA256) {
-            return Err(VerifyError::PlatformError(
-                "Nitro: root CA fingerprint does not match pinned AWS Nitro Root CA".into(),
-            ));
-        }
+    // Never let an empty bundle skip the pinned-root check.
+    if cab.is_empty() {
+        return Err(VerifyError::PlatformError(
+            "Nitro: empty certificate bundle".into(),
+        ));
     }
+    let mut chain = vec![leaf_cert_der];
+    chain.extend(cab.into_iter().rev());
+    pki::validate_chain(
+        &chain,
+        super::roots::AWS_NITRO_ROOT_SHA256,
+        now,
+        pki::Curve::P384,
+    )
+    .map_err(pki_error)?;
 
     // Sort PCRs by index
     pcrs.sort_by(|a, b| {
@@ -426,51 +492,18 @@ fn verify_nitro_quote(
         a_num.cmp(&b_num)
     });
 
+    // Return only after the COSE signature and pinned chain were verified.
+    if let Some(user_data) = user_data {
+        pcrs.push(("USER_DATA".into(), user_data));
+    }
     Ok((true, pcrs))
-}
-
-/// Verify cert chain link for Nitro (ECDSA-P384 certs).
-#[cfg(feature = "nitro")]
-fn verify_cert_chain_p384_nitro(issuer_der: &[u8], subject_der: &[u8]) -> Result<(), VerifyError> {
-    use der::{Decode, Encode};
-    use p384::ecdsa::{self, signature::hazmat::PrehashVerifier};
-    use sha2::Sha384;
-    use x509_cert::Certificate;
-
-    let issuer = Certificate::from_der(issuer_der)
-        .map_err(|e| VerifyError::PlatformError(format!("parse issuer cert: {e}")))?;
-    let subject = Certificate::from_der(subject_der)
-        .map_err(|e| VerifyError::PlatformError(format!("parse subject cert: {e}")))?;
-
-    let issuer_pk_bytes = issuer
-        .tbs_certificate
-        .subject_public_key_info
-        .subject_public_key
-        .raw_bytes();
-    let vk = ecdsa::VerifyingKey::from_sec1_bytes(issuer_pk_bytes)
-        .map_err(|e| VerifyError::PlatformError(format!("issuer P-384 key: {e}")))?;
-
-    let tbs_der = subject
-        .tbs_certificate
-        .to_der()
-        .map_err(|e| VerifyError::PlatformError(format!("re-encode TBS: {e}")))?;
-
-    let sig_bytes = subject.signature.raw_bytes();
-    let sig = ecdsa::DerSignature::from_bytes(sig_bytes)
-        .map_err(|e| VerifyError::PlatformError(format!("parse cert sig: {e}")))?;
-
-    let digest = Sha384::digest(&tbs_der);
-    vk.verify_prehash(&digest, &sig)
-        .map_err(|e| VerifyError::PlatformError(format!("Nitro cert chain: {e}")))?;
-
-    Ok(())
 }
 
 // ============================================================================
 // AMD SEV-SNP verification
 // ============================================================================
 //
-// Report: 1152 bytes binary.
+// Report: 1184 bytes binary.
 // Signed data: bytes [0x000..0x2A0] (672 bytes)
 // Signature: ECDSA-P384 at offset 0x2A0 (r||s, 48 bytes each, padded to 72 each in 512 byte field)
 //
@@ -481,19 +514,19 @@ fn verify_cert_chain_p384_nitro(issuer_der: &[u8], subject_der: &[u8]) -> Result
 fn verify_snp_quote(
     raw_quote: &[u8],
     expected_binding: &[u8; 32],
+    now: u64,
+    explicit_chain: Option<(&[Vec<u8>], &str)>,
 ) -> Result<(bool, Vec<(String, Vec<u8>)>), VerifyError> {
     use p384::ecdsa::{self, signature::hazmat::PrehashVerifier};
     use sha2::Sha384;
 
-    // Require enough bytes to read the signature (r at 0x2A0..0x2D0, s at 0x2E8..0x318).
-    // Full SNP report is 1184 bytes (0x4A0), but captured reports may be 1152 (0x480)
-    // if the 32-byte response header was stripped. Either way, we need at least 0x318
-    // to read the complete ECDSA-P384 signature.
-    if raw_quote.len() < 0x318 {
+    // The SNP report structure itself is exactly 1184 bytes, before the
+    // optional certificate table. Stripped transport headers do not shorten it.
+    if raw_quote.len() < 0x4a0 {
         return Err(VerifyError::PlatformError(format!(
             "SNP report too short for signature verification: {} bytes (need >= {})",
             raw_quote.len(),
-            0x318
+            0x4a0
         )));
     }
 
@@ -505,6 +538,22 @@ fn verify_snp_quote(
         )));
     }
 
+    let signature_algorithm = u32::from_le_bytes(raw_quote[0x34..0x38].try_into().unwrap());
+    let key_info = u32::from_le_bytes(raw_quote[0x48..0x4c].try_into().unwrap());
+    if signature_algorithm != 1 || ((key_info >> 2) & 7) > 1 || key_info & !0x1f != 0 {
+        return Err(VerifyError::PlatformError(
+            "SNP unsupported signature algorithm/signing-key encoding".into(),
+        ));
+    }
+    if raw_quote[0x2d0..0x2e8]
+        .iter()
+        .chain(&raw_quote[0x318..0x4a0])
+        .any(|b| *b != 0)
+    {
+        return Err(VerifyError::PlatformError(
+            "SNP nonzero reserved signature bytes".into(),
+        ));
+    }
     // Extract MEASUREMENT (48 bytes at offset 0x090)
     let measurement = raw_quote[0x090..0x0C0].to_vec();
 
@@ -555,17 +604,43 @@ fn verify_snp_quote(
         let mut ask_der: Option<Vec<u8>> = None;
         let mut ark_der: Option<Vec<u8>> = None;
 
-        if raw_quote.len() > 0x480 {
+        if raw_quote.len() > 0x4A0 {
             parse_snp_cert_table(
                 raw_quote,
                 &mut vcek_der,
                 &mut vlek_der,
                 &mut ask_der,
                 &mut ark_der,
-            );
+            )?;
         }
 
-        let product = crate::tee::kds::snp_product(raw_quote).unwrap_or("Milan");
+        if let Some((chain, _)) = explicit_chain {
+            if chain.len() != 3 {
+                return Err(VerifyError::PlatformError(
+                    "SNP requires leaf/intermediate/root collateral chain".into(),
+                ));
+            }
+            let supplied_leaf = if is_vlek { &vlek_der } else { &vcek_der };
+            if supplied_leaf.as_ref().is_some_and(|v| v != &chain[0])
+                || ask_der.as_ref().is_some_and(|v| v != &chain[1])
+                || ark_der.as_ref().is_some_and(|v| v != &chain[2])
+            {
+                return Err(VerifyError::PlatformError(
+                    "SNP embedded/collateral certificate paths disagree".into(),
+                ));
+            }
+            if is_vlek {
+                vlek_der = Some(chain[0].clone());
+            } else {
+                vcek_der = Some(chain[0].clone());
+            }
+            ask_der = Some(chain[1].clone());
+            ark_der = Some(chain[2].clone());
+        }
+        let product = match explicit_chain {
+            Some((_, product)) => product,
+            None => crate::tee::kds::snp_product(raw_quote).map_err(VerifyError::PlatformError)?,
+        };
 
         if is_vlek {
             // AWS/Azure ship only the VLEK leaf inline; its intermediate (ASVK)
@@ -632,11 +707,10 @@ fn verify_snp_quote(
             // Verify leaf → ASK/ASVK → ARK chain if available. The ARK root is
             // shared across the VCEK and VLEK chains for a product line.
             if let (Some(ref ask), Some(ref ark)) = (&ask_der, &ark_der) {
-                verify_cert_sig(ark, ark)?; // ARK is self-signed (RSA-PSS)
-                                            // Pin to the ARK for the exact product line. An unrecognized
-                                            // product is a hard error — we will not silently fall back to a
-                                            // different vendor root (that would let a Turin/other quote be
-                                            // checked against the Milan root and rejected for the wrong reason).
+                // Pin to the ARK for the exact product line. An unrecognized
+                // product is a hard error — we will not silently fall back to a
+                // different vendor root (that would let a Turin/other quote be
+                // checked against the Milan root and rejected for the wrong reason).
                 let expected_fp = match product {
                     "Milan" => super::roots::AMD_ARK_MILAN_SHA256,
                     "Genoa" => super::roots::AMD_ARK_GENOA_SHA256,
@@ -652,8 +726,13 @@ fn verify_snp_quote(
                         "SNP: ARK fingerprint does not match pinned AMD root".into(),
                     ));
                 }
-                verify_cert_sig(ark, ask)?; // ARK signed ASK/ASVK (RSA-PSS)
-                verify_cert_sig(ask, leaf)?; // ASK/ASVK signed leaf (VLEK/VCEK)
+                pki::validate_chain(
+                    &[leaf.clone(), ask.clone(), ark.clone()],
+                    expected_fp,
+                    now,
+                    pki::Curve::AmdEndorsement,
+                )
+                .map_err(pki_error)?;
                 chain_verified = true;
             }
         }
@@ -674,7 +753,7 @@ fn verify_snp_quote(
         ),
     ];
 
-    if raw_quote.len() > 0x4A0 || raw_quote.len() > 0x480 {
+    if raw_quote.len() > 0x4A0 {
         measurements.push(("HAS_CERT_TABLE".to_string(), vec![1]));
     }
 
@@ -686,7 +765,7 @@ fn verify_snp_quote(
 }
 
 /// Parse the SNP_GET_EXT_REPORT certificate table.
-/// The table appears after the 1152-byte report (+ possible padding).
+/// The table appears after the 1184-byte report.
 /// Format: array of {guid: [u8;16], offset: u32, length: u32} entries.
 #[cfg(feature = "sev-snp")]
 fn parse_snp_cert_table(
@@ -695,14 +774,16 @@ fn parse_snp_cert_table(
     vlek: &mut Option<Vec<u8>>,
     ask: &mut Option<Vec<u8>>,
     ark: &mut Option<Vec<u8>>,
-) {
-    // Known GUIDs for SNP cert table entries
+) -> Result<(), VerifyError> {
+    // AMD GHCB 56421 rev2.04 §4.1.8.1: RFC4122 canonical UUID bytes.
+    // VCEK 63da758d-e664-4564-adc5-f4b93be8accd, ARK
+    // c0b406a4-a803-4952-9743-3fb6014cd0ae. No UEFI GUID endian swap.
     const VCEK_GUID: [u8; 16] = [
-        0x63, 0xda, 0x75, 0x8d, 0xe6, 0x64, 0x56, 0x45, 0xb4, 0x58, 0x73, 0x2a, 0x2b, 0x5d, 0xcc,
-        0xf7,
+        0x63, 0xda, 0x75, 0x8d, 0xe6, 0x64, 0x45, 0x64, 0xad, 0xc5, 0xf4, 0xb9, 0x3b, 0xe8, 0xac,
+        0xcd,
     ];
     // VLEK (Versioned Loaded Endorsement Key) — used by AWS / Azure CVMs.
-    // GUID a8074bc2-a25a-483e-aae6-39c045a0b8a1, stored raw (mixed-endian fields).
+    // GUID a8074bc2-a25a-483e-aae6-39c045a0b8a1, stored in canonical UUID byte order.
     const VLEK_GUID: [u8; 16] = [
         0xa8, 0x07, 0x4b, 0xc2, 0xa2, 0x5a, 0x48, 0x3e, 0xaa, 0xe6, 0x39, 0xc0, 0x45, 0xa0, 0xb8,
         0xa1,
@@ -712,24 +793,43 @@ fn parse_snp_cert_table(
         0x82,
     ];
     const ARK_GUID: [u8; 16] = [
-        0xc0, 0xb4, 0x06, 0xa4, 0x43, 0x8f, 0x4a, 0xf3, 0xab, 0x09, 0xa6, 0xf2, 0xea, 0xb4, 0x43,
-        0x74,
+        0xc0, 0xb4, 0x06, 0xa4, 0xa8, 0x03, 0x49, 0x52, 0x97, 0x43, 0x3f, 0xb6, 0x01, 0x4c, 0xd0,
+        0xae,
     ];
 
     // Cert table starts right after the 1184-byte report
     let table_start = 0x4A0; // 1184 bytes
-    if raw.len() <= table_start + 24 {
-        return;
+    if raw.len() == table_start {
+        return Ok(());
+    }
+    if raw.len() < table_start + 24 {
+        return Err(VerifyError::PlatformError(
+            "SNP truncated certificate table".into(),
+        ));
     }
 
     let mut offset = table_start;
+    let mut seen = std::collections::HashSet::new();
+    let mut ranges = Vec::new();
     loop {
         if offset + 24 > raw.len() {
-            break;
+            return Err(VerifyError::PlatformError(
+                "SNP unterminated certificate table".into(),
+            ));
         }
         let guid: [u8; 16] = raw[offset..offset + 16].try_into().unwrap();
         if guid == [0u8; 16] {
-            break; // terminator
+            if raw[offset + 16..offset + 24].iter().any(|v| *v != 0) {
+                return Err(VerifyError::PlatformError(
+                    "SNP invalid table terminator".into(),
+                ));
+            }
+            break;
+        }
+        if !seen.insert(guid) || seen.len() > 32 {
+            return Err(VerifyError::PlatformError(
+                "SNP duplicate/excessive certificate table entries".into(),
+            ));
         }
         let data_offset =
             u32::from_le_bytes(raw[offset + 16..offset + 20].try_into().unwrap()) as usize;
@@ -737,8 +837,20 @@ fn parse_snp_cert_table(
             u32::from_le_bytes(raw[offset + 20..offset + 24].try_into().unwrap()) as usize;
 
         // data_offset is relative to start of cert table data area
-        let abs_offset = table_start + data_offset;
-        if abs_offset + data_length <= raw.len() {
+        let abs_offset = table_start
+            .checked_add(data_offset)
+            .ok_or_else(|| VerifyError::PlatformError("SNP certificate offset overflow".into()))?;
+        if data_length == 0
+            || data_length > 256 * 1024
+            || abs_offset < offset + 24
+            || data_length > raw.len().saturating_sub(abs_offset)
+        {
+            return Err(VerifyError::PlatformError(
+                "SNP certificate table range invalid".into(),
+            ));
+        }
+        ranges.push((abs_offset, abs_offset + data_length));
+        {
             let cert_data = raw[abs_offset..abs_offset + data_length].to_vec();
             if guid == VCEK_GUID {
                 *vcek = Some(cert_data);
@@ -753,6 +865,17 @@ fn parse_snp_cert_table(
 
         offset += 24;
     }
+    ranges.sort_unstable();
+    let mut end = offset + 24; // Payloads cannot overlap table entries/terminator.
+    for (start, stop) in ranges {
+        if start < end {
+            return Err(VerifyError::PlatformError(
+                "SNP overlapping certificate table ranges".into(),
+            ));
+        }
+        end = stop;
+    }
+    Ok(())
 }
 
 // ============================================================================
@@ -785,6 +908,7 @@ fn parse_snp_cert_table(
 fn verify_tdx_quote(
     raw_quote: &[u8],
     expected_binding: &[u8; 32],
+    now: u64,
 ) -> Result<(bool, Vec<(String, Vec<u8>)>), VerifyError> {
     use p256::ecdsa::{self, signature::hazmat::PrehashVerifier};
 
@@ -798,12 +922,17 @@ fn verify_tdx_quote(
 
     // Parse header
     let version = u16::from_le_bytes(raw_quote[0..2].try_into().unwrap());
-    if version != 4 && version != 5 {
+    if version != 4 {
         return Err(VerifyError::PlatformError(format!(
-            "TDX quote version {version}, expected 4 or 5"
+            "TDX quote version {version}, only v4 is supported"
         )));
     }
 
+    if raw_quote[2..4] != [2, 0] {
+        return Err(VerifyError::PlatformError(
+            "TDX unsupported attestation key type".into(),
+        ));
+    }
     let tee_type = u32::from_le_bytes(raw_quote[4..8].try_into().unwrap());
     if tee_type != 0x81 {
         return Err(VerifyError::PlatformError(format!(
@@ -830,9 +959,9 @@ fn verify_tdx_quote(
 
     // --- Parse signature section ---
     let sig_data_size = u32::from_le_bytes(raw_quote[632..636].try_into().unwrap()) as usize;
-    if raw_quote.len() < 636 + sig_data_size {
+    if sig_data_size != raw_quote.len() - 636 {
         return Err(VerifyError::PlatformError(
-            "TDX: quote truncated in signature section".into(),
+            "TDX: quote signature section length mismatch".into(),
         ));
     }
     let sig_data = &raw_quote[636..636 + sig_data_size];
@@ -874,7 +1003,12 @@ fn verify_tdx_quote(
     let mut qe_verified = false;
     let mut chain_verified = false;
 
-    if cert_data_type == 6 && sig_data.len() >= 134 + cert_data_size {
+    if cert_data_type != 6 || cert_data_size != sig_data.len() - 134 {
+        return Err(VerifyError::PlatformError(
+            "TDX unsupported/trailing certification data".into(),
+        ));
+    }
+    if cert_data_type == 6 {
         let qe_cd = &sig_data[134..134 + cert_data_size];
 
         if qe_cd.len() >= 450 {
@@ -884,11 +1018,12 @@ fn verify_tdx_quote(
             let qe_report_sig_bytes = &qe_cd[384..448];
             // QE Auth Data
             let qe_auth_size = u16::from_le_bytes(qe_cd[448..450].try_into().unwrap()) as usize;
-            let qe_auth = if qe_cd.len() >= 450 + qe_auth_size {
-                &qe_cd[450..450 + qe_auth_size]
-            } else {
-                &[]
-            };
+            if qe_auth_size > qe_cd.len() - 450 {
+                return Err(VerifyError::PlatformError(
+                    "TDX truncated QE authentication data".into(),
+                ));
+            }
+            let qe_auth = &qe_cd[450..450 + qe_auth_size];
 
             // 5. Verify AK binding: SHA256(AK_pub || QE_Auth) == QE_REPORTDATA[0:32]
             let mut ak_auth_hasher = Sha256::new();
@@ -912,12 +1047,14 @@ fn verify_tdx_quote(
                     u32::from_le_bytes(qe_cd[inner_off + 2..inner_off + 6].try_into().unwrap())
                         as usize;
 
-                if inner_type == 5 && qe_cd.len() >= inner_off + 6 + inner_size {
+                if inner_type != 5 || inner_size != qe_cd.len() - inner_off - 6 {
+                    return Err(VerifyError::PlatformError(
+                        "TDX unsupported/trailing PCK certification data".into(),
+                    ));
+                }
+                if inner_type == 5 {
                     let pem_data = &qe_cd[inner_off + 6..inner_off + 6 + inner_size];
-                    let pem_str = std::str::from_utf8(pem_data).unwrap_or("");
-
-                    // Parse PEM certs into DER
-                    let der_certs = parse_pem_chain(pem_str);
+                    let der_certs = pki::parse_pem_chain(pem_data).map_err(pki_error)?;
 
                     if der_certs.len() >= 2 {
                         // der_certs[0] = PCK, der_certs[1] = Intermediate, der_certs[2] = Root
@@ -950,33 +1087,14 @@ fn verify_tdx_quote(
 
                         // 8. Verify cert chain
                         if der_certs.len() >= 3 {
-                            let root_der = &der_certs[der_certs.len() - 1];
-                            // Verify each link
-                            let mut chain_ok = true;
-                            for i in (0..der_certs.len() - 1).rev() {
-                                if verify_cert_chain_p256(&der_certs[i + 1], &der_certs[i]).is_err()
-                                {
-                                    chain_ok = false;
-                                    break;
-                                }
-                            }
-                            // Verify root is self-signed
-                            if chain_ok {
-                                chain_ok = verify_cert_chain_p256(root_der, root_der).is_ok();
-                            }
-                            // Pin Intel SGX Root CA fingerprint
-                            if chain_ok {
-                                chain_ok = super::roots::verify_root_fingerprint(
-                                    root_der,
-                                    super::roots::INTEL_SGX_ROOT_SHA256,
-                                );
-                                if !chain_ok {
-                                    eprintln!(
-                                        "[uq/verify] TDX: Intel root CA fingerprint mismatch"
-                                    );
-                                }
-                            }
-                            chain_verified = chain_ok;
+                            pki::validate_chain(
+                                &der_certs,
+                                super::roots::INTEL_SGX_ROOT_SHA256,
+                                now,
+                                pki::Curve::P256,
+                            )
+                            .map_err(pki_error)?;
+                            chain_verified = true;
                         }
                     }
                 }
@@ -1017,52 +1135,181 @@ fn verify_tdx_quote(
     ))
 }
 
-/// Parse a PEM certificate chain string into a Vec of DER byte vectors.
-#[cfg(feature = "tdx")]
-fn parse_pem_chain(pem_str: &str) -> Vec<Vec<u8>> {
-    use base64::Engine;
-    let engine = base64::engine::general_purpose::STANDARD;
-
-    let mut certs = Vec::new();
-    for block in pem_str.split("-----END CERTIFICATE-----") {
-        if let Some(start) = block.find("-----BEGIN CERTIFICATE-----") {
-            let b64 = &block[start + 27..];
-            let cleaned: String = b64.chars().filter(|c| !c.is_whitespace()).collect();
-            if let Ok(der) = engine.decode(&cleaned) {
-                certs.push(der);
-            }
-        }
-    }
-    certs
-}
-
-// ============================================================================
-// EAT binding verification wrappers.
-// These pass the already-computed EAT binding into the full platform
-// verifier instead of reconstructing legacy sha256(pubkey || value_x)
-// bindings.
-// ============================================================================
-
-#[cfg(feature = "sev-snp")]
-fn verify_snp_quote_raw(
-    raw_quote: &[u8],
-    expected_binding: &[u8; 32],
-) -> Result<(bool, Vec<(String, Vec<u8>)>), VerifyError> {
-    verify_snp_quote(raw_quote, expected_binding)
-}
-
-#[cfg(feature = "tdx")]
-fn verify_tdx_quote_raw(
-    raw_quote: &[u8],
-    expected_binding: &[u8; 32],
-) -> Result<(bool, Vec<(String, Vec<u8>)>), VerifyError> {
-    verify_tdx_quote(raw_quote, expected_binding)
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum VerifyError {
     #[error("unsupported platform: {0:?}")]
     UnsupportedPlatform(Platform),
     #[error("platform quote verification failed: {0}")]
     PlatformError(String),
+}
+
+fn trusted_now() -> Result<u64, VerifyError> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|v| v.as_secs())
+        .map_err(|e| VerifyError::PlatformError(format!("invalid verifier clock: {e}")))
+}
+fn pki_error(error: anyhow::Error) -> VerifyError {
+    VerifyError::PlatformError(format!("CPU PKIX: {error:#}"))
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    #[cfg(feature = "nitro")]
+    #[test]
+    fn attacker_signed_nitro_document_cannot_bypass_root_with_empty_cabundle() {
+        use p384::{
+            ecdsa::{signature::Signer, Signature, SigningKey},
+            pkcs8::DecodePrivateKey,
+        };
+        use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P384_SHA384};
+        use serde_cbor::Value as V;
+        let key = KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384).unwrap();
+        let cert = CertificateParams::default().self_signed(&key).unwrap();
+        let binding = [37; 32];
+        let payload = V::Map(
+            [
+                (V::Text("digest".into()), V::Text("SHA384".into())),
+                (
+                    V::Text("pcrs".into()),
+                    V::Map([(V::Integer(0), V::Bytes(vec![1; 48]))].into()),
+                ),
+                (V::Text("user_data".into()), V::Bytes(binding.to_vec())),
+                (V::Text("certificate".into()), V::Bytes(cert.der().to_vec())),
+                (V::Text("cabundle".into()), V::Array(vec![])),
+            ]
+            .into(),
+        );
+        let payload = serde_cbor::to_vec(&payload).unwrap();
+        let protected =
+            serde_cbor::to_vec(&V::Map([(V::Integer(1), V::Integer(-35))].into())).unwrap();
+        let signed = serde_cbor::to_vec(&V::Array(vec![
+            V::Text("Signature1".into()),
+            V::Bytes(protected.clone()),
+            V::Bytes(vec![]),
+            V::Bytes(payload.clone()),
+        ]))
+        .unwrap();
+        let signer = SigningKey::from_pkcs8_der(&key.serialize_der()).unwrap();
+        let sig: Signature = signer.sign(&signed);
+        let doc = serde_cbor::to_vec(&V::Array(vec![
+            V::Bytes(protected),
+            V::Map(Default::default()),
+            V::Bytes(payload),
+            V::Bytes(sig.to_bytes().to_vec()),
+        ]))
+        .unwrap();
+        let err = verify_platform_quote_at(Platform::Nitro, &doc, &binding, 1_791_849_600)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("empty certificate bundle"), "{err}");
+    }
+
+    #[cfg(feature = "sev-snp")]
+    #[test]
+    fn authentic_amd_signature_verifies_and_unsigned_claim_mutation_fails() {
+        let report = include_bytes!("../../testdata/snp-collateral/google-milan-debug-report.bin");
+        let mut chain =
+            vec![include_bytes!("../../testdata/snp-collateral/google-milan-vcek.der").to_vec()];
+        chain.extend(
+            pki::parse_pem_chain(include_bytes!(
+                "../../testdata/snp-collateral/amd-milan-chain.pem"
+            ))
+            .unwrap(),
+        );
+        let binding = report[0x50..0x70].try_into().unwrap();
+        assert!(
+            verify_snp_quote(report, &binding, 1_791_849_600, Some((&chain, "Milan")))
+                .unwrap()
+                .0
+        );
+        let mut bad = report.to_vec();
+        bad[10] &= !8;
+        assert!(verify_snp_quote(&bad, &binding, 1_791_849_600, Some((&chain, "Milan"))).is_err());
+        for end in [0, 671, 792, 1152, 1183] {
+            assert!(verify_snp_quote(
+                &report[..end],
+                &binding,
+                1_791_849_600,
+                Some((&chain, "Milan"))
+            )
+            .is_err());
+        }
+        let mut bad = report.to_vec();
+        bad[0x34] = 2;
+        assert!(verify_snp_quote(&bad, &binding, 1_791_849_600, Some((&chain, "Milan"))).is_err());
+        let mut bad = report.to_vec();
+        bad[0x318] = 1;
+        assert!(verify_snp_quote(&bad, &binding, 1_791_849_600, Some((&chain, "Milan"))).is_err());
+    }
+
+    #[cfg(feature = "sev-snp")]
+    #[test]
+    fn authentic_amd_certificates_parse_with_published_cert_table_uuid_bytes() {
+        // Repackage unchanged public report/certificates into the Linux SNP
+        // auxiliary table. UUIDs are the AMD GHCB/primary ABI registry values.
+        let report = include_bytes!("../../testdata/snp-collateral/google-milan-debug-report.bin");
+        let mut chain =
+            vec![include_bytes!("../../testdata/snp-collateral/google-milan-vcek.der").to_vec()];
+        chain.extend(
+            pki::parse_pem_chain(include_bytes!(
+                "../../testdata/snp-collateral/amd-milan-chain.pem"
+            ))
+            .unwrap(),
+        );
+        let ids = [
+            "63da758de6644564adc5f4b93be8accd",
+            "4ab7b379bbac4fe4a02f05aef327c782",
+            "c0b406a4a803495297433fb6014cd0ae",
+        ];
+        let mut raw = report.to_vec();
+        raw.resize(1184 + 4 * 24, 0);
+        for (index, (id, cert)) in ids.iter().zip(&chain).enumerate() {
+            let start = 1184 + index * 24;
+            raw[start..start + 16].copy_from_slice(&hex::decode(id).unwrap());
+            let offset = (raw.len() - 1184) as u32;
+            raw[start + 16..start + 20].copy_from_slice(&offset.to_le_bytes());
+            raw[start + 20..start + 24].copy_from_slice(&(cert.len() as u32).to_le_bytes());
+            raw.extend_from_slice(cert);
+        }
+        let (mut vcek, mut vlek, mut ask, mut ark) = (None, None, None, None);
+        parse_snp_cert_table(&raw, &mut vcek, &mut vlek, &mut ask, &mut ark).unwrap();
+        assert_eq!(vcek.as_ref(), Some(&chain[0]));
+        assert_eq!(ask.as_ref(), Some(&chain[1]));
+        assert_eq!(ark.as_ref(), Some(&chain[2]));
+        assert!(vlek.is_none());
+        let binding = report[0x50..0x70].try_into().unwrap();
+        assert!(
+            verify_snp_quote(&raw, &binding, 1_791_849_600, Some((&chain, "Milan")))
+                .unwrap()
+                .0
+        );
+        let mut duplicate = raw.clone();
+        let first = duplicate[1184..1200].to_vec();
+        duplicate[1208..1224].copy_from_slice(&first);
+        assert!(
+            parse_snp_cert_table(&duplicate, &mut vcek, &mut vlek, &mut ask, &mut ark).is_err()
+        );
+        let mut overlap = raw;
+        overlap[1200..1204].copy_from_slice(&24u32.to_le_bytes());
+        assert!(parse_snp_cert_table(&overlap, &mut vcek, &mut vlek, &mut ask, &mut ark).is_err());
+    }
+
+    #[cfg(feature = "tdx")]
+    #[test]
+    fn tdx_v5_is_not_interpreted_as_v4_and_missing_collateral_never_admits() {
+        let mut raw = vec![0u8; 636];
+        raw[..2].copy_from_slice(&5u16.to_le_bytes());
+        raw[2] = 2;
+        raw[4] = 0x81;
+        let err = verify_platform_quote_at(Platform::Tdx, &raw, &[0; 32], 1_791_849_600)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("version"), "{err}");
+        assert!(
+            verify_platform_quote_for_admission(Platform::Tdx, &raw, &[0; 32], None, None).is_err()
+        );
+    }
 }

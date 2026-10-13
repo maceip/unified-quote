@@ -93,6 +93,8 @@ mod tests {
             iat: 1,
             eat_nonce: [0u8; 32],
             previous_attestation: Vec::new(),
+            gpu_evidence: Vec::new(),
+            boot_evidence: Vec::new(),
         }
     }
 

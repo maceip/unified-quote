@@ -257,7 +257,7 @@ pub fn verify_bundle_with_options(
 
         // 3. The agent binary must actually have been measured by the kernel:
         //    its sha256 must appear as a file-data hash in the IMA log.
-        if !ima_contains_filehash(&bundle.ima_log, &build_digest) {
+        if !ima_contains_filehash(&bundle.ima_log, &build_digest)? {
             return Err(TpmVerifyError::Verify(
                 "build_digest was not measured by IMA (binary not in the log)".into(),
             ));
@@ -279,6 +279,36 @@ pub fn verify_bundle_with_options(
         ima_verified,
         boot_aggregate,
     })
+}
+
+/// Verify a boot log against PCR 0..9 from this hardware-rooted, challenge-bound
+/// TPM evidence. The caller supplies a fresh expected binding independently of
+/// the bundle. The existing IMA profile also requires authenticated PCR 10 and
+/// measured application identity; raw PCRs can never construct a verified log.
+pub fn verify_boot_event_log(
+    bundle: &TpmClientBundle,
+    expected_binding: &[u8; 32],
+    options: &TpmVerifierOptions,
+    log: &crate::boot::EventLog,
+) -> Result<crate::boot::VerifiedBootLog, TpmVerifyError> {
+    let verdict = verify_bundle_with_options(bundle, expected_binding, options)?;
+    if !verdict.ima_verified {
+        return Err(TpmVerifyError::Verify(
+            "boot log verification requires the quoted PCR/IMA profile".into(),
+        ));
+    }
+    let pcrs = parse_pcrs(&bundle.pcrs)?;
+    let values = (0..=9)
+        .map(|index| {
+            pcrs.get(&index)
+                .map(|value| ((crate::boot::TPM_ALG_SHA256, index), value.to_vec()))
+                .ok_or_else(|| TpmVerifyError::Verify(format!("required PCR {index} missing")))
+        })
+        .collect::<Result<_, _>>()?;
+    let registers = crate::boot::AuthenticatedRegisters::tpm(values)
+        .map_err(|e| TpmVerifyError::Verify(e.to_string()))?;
+    log.verify(&registers)
+        .map_err(|e| TpmVerifyError::Verify(e.to_string()))
 }
 
 fn verify_hardware_root(
@@ -453,7 +483,17 @@ struct ParsedQuote {
 
 /// Parse a TPM2B_ATTEST blob (TPMS_ATTEST of type `TPM_ST_ATTEST_QUOTE`).
 fn parse_quote(quote_msg: &[u8]) -> Result<ParsedQuote, TpmVerifyError> {
-    let attest = read_tpm2b(quote_msg, 0)?.0;
+    if quote_msg.len() > 65537 {
+        return Err(TpmVerifyError::Parse(
+            "TPM2B_ATTEST exceeds maximum encoded length".into(),
+        ));
+    }
+    let (attest, end) = read_tpm2b(quote_msg, 0)?;
+    if end != quote_msg.len() {
+        return Err(TpmVerifyError::Parse(
+            "trailing bytes after TPM2B_ATTEST".into(),
+        ));
+    }
     let mut off = 0usize;
 
     let magic = read_u32(&attest, &mut off)?;
@@ -481,14 +521,30 @@ fn parse_quote(quote_msg: &[u8]) -> Result<ParsedQuote, TpmVerifyError> {
 
     // TPMS_QUOTE_INFO: pcrSelect (TPML_PCR_SELECTION) + pcrDigest (TPM2B_DIGEST).
     let count = read_u32(&attest, &mut off)? as usize;
+    if count == 0 || count > 16 {
+        return Err(TpmVerifyError::Parse(
+            "invalid TPM PCR selection count".into(),
+        ));
+    }
     let mut selections = Vec::with_capacity(count);
+    let mut banks = std::collections::BTreeSet::new();
     for _ in 0..count {
         let hash_alg = read_u16(&attest, &mut off)?;
         let size_of_select = read_u8(&attest, &mut off)? as usize;
+        if !banks.insert(hash_alg) || size_of_select == 0 || size_of_select > 3 {
+            return Err(TpmVerifyError::Parse(
+                "duplicate bank or invalid PCR selection bitmap".into(),
+            ));
+        }
         let bitmap = read_bytes(&attest, &mut off, size_of_select)?;
         selections.push((hash_alg, pcr_indices_from_bitmap(bitmap)));
     }
-    let (pcr_digest, _) = read_tpm2b(&attest, off)?;
+    let (pcr_digest, end) = read_tpm2b(&attest, off)?;
+    if end != attest.len() {
+        return Err(TpmVerifyError::Parse(
+            "trailing bytes after TPMS_QUOTE_INFO".into(),
+        ));
+    }
 
     Ok(ParsedQuote {
         extra_data,
@@ -503,12 +559,26 @@ fn verify_pcr_digest(
     quote: &ParsedQuote,
     pcrs: &BTreeMap<u32, [u8; 32]>,
 ) -> Result<(), TpmVerifyError> {
+    if quote.selections.len() != 1 || quote.selections[0].0 != TPM_ALG_SHA256 {
+        return Err(TpmVerifyError::Verify(
+            "exactly one SHA-256 PCR bank is required".into(),
+        ));
+    }
     let indices = quote
         .selections
         .iter()
         .find(|(alg, _)| *alg == TPM_ALG_SHA256)
         .map(|(_, idx)| idx.clone())
         .ok_or_else(|| TpmVerifyError::Verify("quote has no sha256 PCR selection".into()))?;
+
+    if indices.is_empty()
+        || indices.len() != pcrs.len()
+        || indices.iter().any(|index| !pcrs.contains_key(index))
+    {
+        return Err(TpmVerifyError::Verify(
+            "reported PCR coverage differs from the signed quote selection".into(),
+        ));
+    }
 
     let mut h = Sha256::new();
     for idx in &indices {
@@ -526,48 +596,88 @@ fn verify_pcr_digest(
     Ok(())
 }
 
-/// Replay the IMA `ascii_runtime_measurements` log into PCR 10:
-/// `PCR = sha256(PCR || template_hash)` for each entry, starting from zero.
-fn replay_ima_pcr10(ima_log: &str) -> Result<[u8; 32], TpmVerifyError> {
-    let mut pcr = [0u8; 32];
+struct ImaNgEntry<'a> {
+    template_digest: [u8; 32],
+    file_digest: [u8; 32],
+    filename: &'a str,
+}
+
+/// Strict ima-ng / SHA-256 / little-endian-canonical field encoding. The Linux
+/// kernel hashes u32 field lengths, then d-ng="sha256:\0" || digest and
+/// n-ng=filename || NUL. The ASCII digest/name columns are not authenticated
+/// until this reconstruction agrees with the template digest extended to PCR10.
+fn parse_ima_ng(ima_log: &str) -> Result<Vec<ImaNgEntry<'_>>, TpmVerifyError> {
+    if ima_log.len() > 32 * 1024 * 1024 {
+        return Err(TpmVerifyError::Parse("IMA log exceeds byte limit".into()));
+    }
+    let mut result = Vec::new();
     for line in ima_log.lines() {
-        let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        let tmpl_hex = line
-            .split_whitespace()
-            .nth(1)
-            .ok_or_else(|| TpmVerifyError::Parse("IMA line missing template hash".into()))?;
-        let tmpl = hex::decode(tmpl_hex)
-            .map_err(|e| TpmVerifyError::Parse(format!("IMA template hash hex: {e}")))?;
-        if tmpl.len() != 32 {
-            return Err(TpmVerifyError::Verify(
-                "IMA template hash is not sha256 (use ima_template=ima-ng ima_hash=sha256)".into(),
+        if line.len() > 8192 || result.len() >= 262_144 || line.contains('\0') {
+            return Err(TpmVerifyError::Parse(
+                "IMA entry exceeds limits or contains NUL".into(),
             ));
         }
+        let fields: Vec<_> = line.split_ascii_whitespace().collect();
+        if fields.len() != 5 || fields[0] != "10" || fields[2] != "ima-ng" {
+            return Err(TpmVerifyError::Verify(
+                "only complete PCR10 ima-ng entries are supported".into(),
+            ));
+        }
+        let logged = parse_hex32(fields[1], "IMA template digest")?;
+        let digest_text = fields[3]
+            .strip_prefix("sha256:")
+            .ok_or_else(|| TpmVerifyError::Verify("IMA d-ng must use sha256".into()))?;
+        let file_digest = parse_hex32(digest_text, "IMA file digest")?;
+        let filename = fields[4];
+        if filename.len() > 4096 || filename.chars().any(char::is_control) {
+            return Err(TpmVerifyError::Parse(
+                "unsupported IMA filename encoding".into(),
+            ));
+        }
+        let mut template = Sha256::new();
+        template.update(40u32.to_le_bytes());
+        template.update(b"sha256:\0");
+        template.update(file_digest);
+        template.update(((filename.len() + 1) as u32).to_le_bytes());
+        template.update(filename.as_bytes());
+        template.update([0]);
+        let template_digest: [u8; 32] = template.finalize().into();
+        if logged != template_digest {
+            return Err(TpmVerifyError::Verify(
+                "IMA template digest does not authenticate its file digest and name".into(),
+            ));
+        }
+        result.push(ImaNgEntry {
+            template_digest,
+            file_digest,
+            filename,
+        });
+    }
+    if result.is_empty() {
+        return Err(TpmVerifyError::Verify("empty IMA log".into()));
+    }
+    Ok(result)
+}
+
+/// Replay only template digests whose displayed field preimages authenticated.
+fn replay_ima_pcr10(ima_log: &str) -> Result<[u8; 32], TpmVerifyError> {
+    let mut pcr = [0u8; 32];
+    for entry in parse_ima_ng(ima_log)? {
         let mut h = Sha256::new();
         h.update(pcr);
-        h.update(&tmpl);
+        h.update(entry.template_digest);
         pcr = h.finalize().into();
     }
     Ok(pcr)
 }
 
-/// True if `build_digest` appears as a measured file-data hash (the
-/// `sha256:<hex>` column) in the IMA log.
-fn ima_contains_filehash(ima_log: &str, build_digest: &[u8; 32]) -> bool {
-    let want = hex::encode(build_digest);
-    for line in ima_log.lines() {
-        for field in line.split_whitespace() {
-            if let Some(h) = field.strip_prefix("sha256:") {
-                if h.eq_ignore_ascii_case(&want) {
-                    return true;
-                }
-            }
-        }
-    }
-    false
+fn ima_contains_filehash(ima_log: &str, build_digest: &[u8; 32]) -> Result<bool, TpmVerifyError> {
+    Ok(parse_ima_ng(ima_log)?
+        .iter()
+        .any(|entry| entry.filename != "boot_aggregate" && &entry.file_digest == build_digest))
 }
 
 /// sha256 over PCR 0-9 (in order): a known-good-boot fingerprint.
@@ -585,10 +695,18 @@ fn boot_aggregate_over_0_9(pcrs: &BTreeMap<u32, [u8; 32]>) -> Result<[u8; 32], T
 }
 
 fn parse_pcrs(pcrs: &[PcrValue]) -> Result<BTreeMap<u32, [u8; 32]>, TpmVerifyError> {
+    if pcrs.len() > 24 {
+        return Err(TpmVerifyError::Parse("too many PCR values".into()));
+    }
     let mut map = BTreeMap::new();
     for p in pcrs {
+        if p.index > 23 {
+            return Err(TpmVerifyError::Parse("PCR index out of range".into()));
+        }
         let v = parse_hex32(&p.value, "pcr value")?;
-        map.insert(p.index, v);
+        if map.insert(p.index, v).is_some() {
+            return Err(TpmVerifyError::Parse("duplicate reported PCR".into()));
+        }
     }
     Ok(map)
 }
@@ -1014,6 +1132,54 @@ mod tests {
     }
 
     #[test]
+    fn unquoted_extra_pcr_cannot_enter_boot_or_ima_policy() {
+        let mut values = BTreeMap::from([(10, [0x11; 32])]);
+        let quote = ParsedQuote {
+            extra_data: vec![],
+            selections: vec![(TPM_ALG_SHA256, vec![10])],
+            pcr_digest: Sha256::digest([0x11; 32]).to_vec(),
+        };
+        verify_pcr_digest(&quote, &values).unwrap();
+        values.insert(0, [0x42; 32]);
+        assert!(verify_pcr_digest(&quote, &values).is_err());
+    }
+
+    #[test]
+    fn duplicate_pcrs_and_multiple_quote_banks_are_rejected() {
+        let pcr = PcrValue {
+            index: 0,
+            value: hex::encode([0; 32]),
+        };
+        assert!(parse_pcrs(&[pcr.clone(), pcr]).is_err());
+        let quote = ParsedQuote {
+            extra_data: vec![],
+            selections: vec![(TPM_ALG_SHA256, vec![0]), (TPM_ALG_SHA384, vec![0])],
+            pcr_digest: Sha256::digest([0; 32]).to_vec(),
+        };
+        assert!(verify_pcr_digest(&quote, &BTreeMap::from([(0, [0; 32])])).is_err());
+    }
+
+    #[test]
+    fn quote_parser_rejects_trailing_and_unbounded_selection_data() {
+        let mut body = TPM_GENERATED_VALUE.to_be_bytes().to_vec();
+        body.extend(TPM_ST_ATTEST_QUOTE.to_be_bytes());
+        body.extend(tpm2b(&[]));
+        body.extend(tpm2b(&[0x11; 32]));
+        body.extend([0; 25]);
+        let count_position = body.len();
+        body.extend(1u32.to_be_bytes());
+        body.extend(TPM_ALG_SHA256.to_be_bytes());
+        body.extend([3, 0xff, 0x07, 0]);
+        body.extend(tpm2b(&[0; 32]));
+        assert!(parse_quote(&tpm2b(&body)).is_ok());
+        let mut trailing = tpm2b(&body);
+        trailing.push(0);
+        assert!(parse_quote(&trailing).is_err());
+        body[count_position..count_position + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(parse_quote(&tpm2b(&body)).is_err());
+    }
+
+    #[test]
     fn rejects_binding_mismatch() {
         let bundle = TpmClientBundle {
             version: 1,
@@ -1038,15 +1204,24 @@ mod tests {
 
     #[test]
     fn ima_replay_extends_pcr10() {
-        // Two synthetic sha256 template hashes; PCR10 = H(H(0||t0)||t1).
-        let t0 = [0xAAu8; 32];
-        let t1 = [0xBBu8; 32];
+        // Independently encoded with Python struct.pack/hashlib from Linux's
+        // ima-ng field encoding; PCR10 = H(H(0||t0)||t1).
+        let t0: [u8; 32] =
+            hex::decode("36f1cd67a730bc4137870c4d00dbc7430b51b1ebdaa130744297cf65339078a0")
+                .unwrap()
+                .try_into()
+                .unwrap();
+        let t1: [u8; 32] =
+            hex::decode("233d2f2fee3047b874edd62604bd02f386912d3bc55a311b694c4b5e5d64fbd8")
+                .unwrap()
+                .try_into()
+                .unwrap();
         let log = format!(
             "10 {} ima-ng sha256:{} boot_aggregate\n10 {} ima-ng sha256:{} /usr/bin/agent\n",
             hex::encode(t0),
             hex::encode([0u8; 32]),
             hex::encode(t1),
-            hex::encode([0u8; 32])
+            hex::encode([0x11u8; 32])
         );
         let mut pcr = [0u8; 32];
         for t in [t0, t1] {
@@ -1063,11 +1238,17 @@ mod tests {
         let digest = [0x11u8; 32];
         let log = format!(
             "10 {} ima-ng sha256:{} /usr/bin/agent\n",
-            hex::encode([0u8; 32]),
+            "233d2f2fee3047b874edd62604bd02f386912d3bc55a311b694c4b5e5d64fbd8",
             hex::encode(digest)
         );
-        assert!(ima_contains_filehash(&log, &digest));
-        assert!(!ima_contains_filehash(&log, &[0x22u8; 32]));
+        assert!(ima_contains_filehash(&log, &digest).unwrap());
+        assert!(!ima_contains_filehash(&log, &[0x22u8; 32]).unwrap());
+        let changed = log.replace(&hex::encode(digest), &hex::encode([0x22; 32]));
+        assert!(ima_contains_filehash(&changed, &[0x22; 32]).is_err());
+        assert!(replay_ima_pcr10(&changed).is_err());
+        assert!(replay_ima_pcr10(&log.replace("/usr/bin/agent", "/usr/bin/other")).is_err());
+        assert!(replay_ima_pcr10(&log.replace("ima-ng", "ima-sig")).is_err());
+        assert!(replay_ima_pcr10(&log.replacen("10 ", "9 ", 1)).is_err());
     }
 
     #[test]

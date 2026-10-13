@@ -17,6 +17,15 @@ provider.
 - real quote verification for intel tdx, amd sev-snp, and aws nitro — each with
   its own evidence device, quote format, and pinned vendor root.
 
+The optional `gpu` feature now includes native NVML/NSCQ collection, NVIDIA
+certificate and revocation validation, signed reference manifests, measurement
+and inventory policy, and CPU-bound composite evidence. See [implementation
+status and usage](v2/GPU.md), the [acceptance ledger](v2/IMPLEMENTATION_STATUS.md),
+and the [full GPU/NVLink design](CAPABILITY_DELTA_AND_GPU_SPEC.md). Admission and
+release remain on hold: vendor evidence/profile gaps and actual hardware
+acceptance are still outstanding. Historical CPU endpoint examples below are
+not acceptance evidence for this new implementation.
+
 ## live attestation (verified)
 
 a real quote, minted on genuine hardware and verified end-to-end against the
@@ -144,7 +153,7 @@ this is the base layer. the others depend on it directly — it is the `uq`
 verifier in the `v2/` workspace member crate `unified-quote`:
 
 ```toml
-unified-quote = { git = "https://github.com/maceip/unified-quote", package = "unified-quote" }
+unified-quote = { git = "https://github.com/ZUNFTMAX/zmax-universal-attestations", package = "unified-quote", features = ["gpu"] }
 ```
 
 attestation-service issues/verifies with it, attested-workload emits + cross-

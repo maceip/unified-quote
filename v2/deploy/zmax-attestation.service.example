@@ -1,0 +1,40 @@
+# Example only. Do not install or enable before target-hardware acceptance.
+# /etc/zmax/attestation.env must define UQ_VALUE_X as the approved 96-hex value.
+# TLS SPKI and collateral paths must be prepared from actual deployment data.
+[Unit]
+Description=ZUNFTMAX local composite attestation evidence
+After=local-fs.target
+ConditionPathExists=/etc/zmax/tls-spki.der
+ConditionPathExists=/var/lib/zmax-attestation/gpu-collateral.json
+ConditionPathExists=/sys/firmware/acpi/tables/data/CCEL
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=/etc/zmax/attestation.env
+ExecStart=/usr/local/bin/uq serve-attestation --unix /run/zmax-attestation/attest.sock --tls-spki /etc/zmax/tls-spki.der --value-x ${UQ_VALUE_X} --gpu --collateral /var/lib/zmax-attestation/gpu-collateral.json --boot-log /sys/firmware/acpi/tables/data/CCEL
+RuntimeDirectory=zmax-attestation
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=no
+UMask=0077
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# The kernel configfs TSM interface creates a per-quote request directory.
+# Do not set PrivateDevices=yes or globally block NVIDIA/TDX ioctls.
+ReadWritePaths=/run/zmax-attestation -/sys/kernel/config/tsm/report
+
+[Install]
+WantedBy=multi-user.target

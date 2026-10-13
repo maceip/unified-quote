@@ -1,19 +1,21 @@
-//! Hardware regression tests.
+//! Archival hardware cryptographic regression tests.
 //!
 //! Loads real attestation.cbor bytes captured from live TEE instances
-//! and verifies them through the full production path:
+//! and checks quote authenticity/binding at an independently fixed capture clock.
+//! These are not current TCB admission or fresh hardware tests.
 //!
 //! 1. `EatToken::from_cbor` decodes the bytes.
 //! 2. `eat.binding_bytes()` is recomputed from the stored fields.
-//! 3. `verify_platform_quote` is called with that binding — which
+//! 3. `verify_platform_quote_at` is called with that binding and fixed clock; it
 //!    checks BOTH the report_data binding AND the platform's
 //!    vendor-signature chain against the pinned root CA (Intel for
 //!    TDX, AMD for SNP, AWS Nitro Root CA for Nitro).
 //!
 //! If this test fails after any change to `eat.rs`, `quote/verify.rs`,
 //! or the cmd_build / cmd_run producer flow, it means the chain
-//! produced on real hardware won't round-trip through the verifier
-//! any more.
+//! produced on real hardware no longer passes the archival cryptographic checks.
+//! Historical TDX output-buffer padding is extracted only by the test helper;
+//! the production verifier must reject the unchanged padded bytes.
 //!
 //! ## Testdata provenance
 //!
@@ -32,7 +34,44 @@
 
 use std::fs;
 use unified_quote::eat::EatToken;
-use unified_quote::quote::{verify::verify_platform_quote, Platform};
+use unified_quote::quote::{
+    verify::{verify_platform_quote, verify_platform_quote_at},
+    Platform,
+};
+
+// Independently recorded capture date, never chosen from attester input.
+const CAPTURE_TIME: u64 = 1_776_211_200; // 2026-04-15 00:00:00 UTC
+
+fn archival_verify(
+    platform: Platform,
+    quote: &[u8],
+    binding: &[u8; 32],
+) -> Result<Vec<(String, Vec<u8>)>, unified_quote::quote::verify::VerifyError> {
+    let exact = if platform == Platform::Tdx {
+        assert!(quote.len() >= 636);
+        let end = 636 + u32::from_le_bytes(quote[632..636].try_into().unwrap()) as usize;
+        assert!(end <= quote.len());
+        assert!(
+            quote[end..].iter().all(|b| *b == 0),
+            "historical output-buffer tail must be all zero"
+        );
+        if end != quote.len() {
+            assert!(
+                verify_platform_quote_at(platform, quote, binding, CAPTURE_TIME).is_err(),
+                "production parser must reject padded quotes"
+            );
+        }
+        &quote[..end]
+    } else {
+        quote
+    };
+    let clock = if platform == Platform::Nitro {
+        1_776_163_130
+    } else {
+        CAPTURE_TIME
+    }; // Nitro captured 2026-04-14 10:38:49 UTC
+    verify_platform_quote_at(platform, exact, binding, clock)
+}
 
 fn load(name: &str) -> Vec<u8> {
     let path = format!("testdata/chain/{name}");
@@ -47,7 +86,7 @@ fn verify_full_path(cbor: &[u8], expected_platform: Platform) {
     assert!(!eat.platform_quote.is_empty(), "platform_quote empty");
 
     let binding = eat.binding_bytes();
-    verify_platform_quote(expected_platform, &eat.platform_quote, &binding).unwrap_or_else(|e| {
+    archival_verify(expected_platform, &eat.platform_quote, &binding).unwrap_or_else(|e| {
         panic!(
             "verify_platform_quote failed for {:?}: {e}\n\
                  binding={}",
@@ -72,7 +111,7 @@ fn tdx_stage1_verifies_and_chains_to_stage0() {
 
     // Leaf verifies against its own binding
     let binding = eat.binding_bytes();
-    verify_platform_quote(Platform::Tdx, &eat.platform_quote, &binding).unwrap();
+    archival_verify(Platform::Tdx, &eat.platform_quote, &binding).unwrap();
 
     // Previous decodes and its binding matches the committed hash
     let prev = eat.decode_previous().unwrap().expect("stage 0");
@@ -84,40 +123,46 @@ fn tdx_stage1_verifies_and_chains_to_stage0() {
 
     // Previous verifies against its own binding
     let prev_binding = prev.binding_bytes();
-    verify_platform_quote(Platform::Tdx, &prev.platform_quote, &prev_binding).unwrap();
+    archival_verify(Platform::Tdx, &prev.platform_quote, &prev_binding).unwrap();
 }
 
-// These fixtures do not carry the AMD certificate table, so full SNP
-// signature-chain verification currently calls AMD KDS. Keep that live
-// vendor dependency out of ordinary `cargo test`.
+// These VLEK-signed fixtures do not carry the endorsement leaf or certificate
+// table. Public AMD KDS can supply issuers, but cannot reconstruct the missing
+// cloud-provisioned VLEK leaf. Preserve the archival positive regressions as
+// deferred until their original endorsement collateral is recovered.
 #[cfg(feature = "sev-snp")]
 #[test]
-#[ignore = "requires live AMD KDS access"]
+#[ignore = "requires original VLEK endorsement collateral, not available from public KDS"]
 fn snp_stage0_verifies() {
     verify_full_path(&load("snp_stage0.cbor"), Platform::SevSnp);
 }
 
 #[cfg(feature = "sev-snp")]
 #[test]
-#[ignore = "requires live AMD KDS access"]
+#[ignore = "requires original VLEK endorsement collateral, not available from public KDS"]
 fn snp_stage1_verifies_and_chains_to_stage0() {
     let cbor = load("snp_stage1.cbor");
     let eat = EatToken::from_cbor(&cbor).unwrap();
     assert!(eat.has_previous());
 
     let binding = eat.binding_bytes();
-    verify_platform_quote(Platform::SevSnp, &eat.platform_quote, &binding).unwrap();
+    archival_verify(Platform::SevSnp, &eat.platform_quote, &binding).unwrap();
 
     let prev = eat.decode_previous().unwrap().expect("stage 0");
     assert_eq!(prev.value_x, eat.value_x);
     assert_eq!(prev.platform_enum(), Some(Platform::SevSnp));
     let prev_binding = prev.binding_bytes();
-    verify_platform_quote(Platform::SevSnp, &prev.platform_quote, &prev_binding).unwrap();
+    archival_verify(Platform::SevSnp, &prev.platform_quote, &prev_binding).unwrap();
 }
 
 #[cfg(feature = "nitro")]
 #[test]
 fn nitro_stage0_verifies() {
+    // The signed leaf has expired; archival verification uses the fixed capture clock.
+    let eat = EatToken::from_cbor(&load("nitro_stage0.cbor")).unwrap();
+    assert!(
+        verify_platform_quote(Platform::Nitro, &eat.platform_quote, &eat.binding_bytes()).is_err()
+    );
     // Nitro cmd_enclave produces stage 0 only; no chain to walk.
     verify_full_path(&load("nitro_stage0.cbor"), Platform::Nitro);
 }
@@ -132,7 +177,7 @@ fn nitro_stage0_verifies() {
 /// Keeping this byte-identical copy in testdata is an archival
 /// record: it's the exact attestation that proved the ouroboros
 /// closed. The test verifies it through the same
-/// `verify_platform_quote` path as every other TDX testdata entry.
+/// archival `verify_platform_quote_at` path as other TDX testdata entries.
 #[cfg(feature = "tdx")]
 #[test]
 fn ouroboros_attestation_verifies() {

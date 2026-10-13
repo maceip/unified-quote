@@ -158,22 +158,18 @@ pub fn serve_vsock(attestation_json: &str) -> Result<()> {
 ///   GET  /                → attestation JSON (static, from boot)
 ///   GET  /eat             → EAT token CBOR bytes (application/eat+cbor)
 ///   GET  /kms-attestation → fresh attestation document (< 5 min old, for KMS)
-///   POST /kms-unwrap      → decrypt CiphertextForRecipient with enclave RSA key
-///   POST /tls-cert        → hot-swap TLS certificate (PEM cert + key, for ACME)
+/// Administration is unavailable on this unauthenticated public listener.
+/// No route exports decrypted KMS plaintext or accepts TLS key replacement.
 #[allow(unused_variables)]
 pub fn serve_tls_vsock(
     tls_config: std::sync::Arc<rustls::ServerConfig>,
     attestation_json: &str,
     eat_cbor: &[u8],
-    kms_private_key: Option<Vec<u8>>,
+    _kms_private_key: Option<Vec<u8>>,
     #[cfg(feature = "nitro")] kms_state: Option<std::sync::Arc<KmsState>>,
 ) -> Result<()> {
     let fd = create_vsock_listener()?;
-    let kms_key = std::sync::Arc::new(kms_private_key);
     let eat_bytes = std::sync::Arc::new(eat_cbor.to_vec());
-    // Hot-swappable TLS config — ACME updates this after provisioning a real cert
-    let live_config: std::sync::Arc<std::sync::RwLock<std::sync::Arc<rustls::ServerConfig>>> =
-        std::sync::Arc::new(std::sync::RwLock::new(tls_config));
     #[cfg(feature = "nitro")]
     let kms_state_arc = kms_state;
     eprintln!("[uq/vsock] TLS+vsock listening on port {VSOCK_PORT}");
@@ -181,9 +177,9 @@ pub fn serve_tls_vsock(
         "[uq/vsock] EAT endpoint: GET /eat ({} bytes)",
         eat_bytes.len()
     );
-    if kms_key.is_some() {
-        eprintln!("[uq/vsock] KMS endpoints: GET /kms-attestation, POST /kms-unwrap");
-    }
+    eprintln!(
+        "[uq/vsock] Public evidence routes only; KMS unwrap and TLS administration are disabled"
+    );
 
     loop {
         let client_fd = unsafe { libc::accept(fd, std::ptr::null_mut(), std::ptr::null_mut()) };
@@ -192,12 +188,9 @@ pub fn serve_tls_vsock(
             continue;
         }
 
-        // Read current TLS config (may have been hot-swapped by ACME)
-        let config = live_config.read().unwrap().clone();
-        let live_cfg = live_config.clone();
+        let config = tls_config.clone();
         let body = attestation_json.to_string();
         let eat_body = eat_bytes.clone();
-        let kms_key = kms_key.clone();
         #[cfg(feature = "nitro")]
         let kms_st = kms_state_arc.clone();
         std::thread::spawn(move || {
@@ -226,51 +219,33 @@ pub fn serve_tls_vsock(
             };
             let mut tls = rustls::StreamOwned::new(conn, stream);
 
-            // Read the full HTTP request (headers + body).
-            // TLS may deliver headers and body in separate records,
-            // so read until we have Content-Length bytes of body.
-            let mut buf = vec![0u8; 32768];
+            // Only read bounded headers: every admitted route is read-only and
+            // accepts no body. Close each connection after one response.
+            let mut buf = vec![0u8; MAX_HTTP_HEADER_BYTES];
             let mut total = 0;
-            loop {
-                let n = match tls.read(&mut buf[total..]) {
-                    Ok(0) => break,
-                    Ok(n) => n,
-                    Err(_) => break,
-                };
-                total += n;
-                // Check if we have the full request (headers + body)
-                let so_far = &buf[..total];
-                if let Some(hdr_end) = so_far.windows(4).position(|w| w == b"\r\n\r\n") {
-                    let hdr = String::from_utf8_lossy(&so_far[..hdr_end]);
-                    let content_len = hdr
-                        .lines()
-                        .find_map(|l| {
-                            l.strip_prefix("Content-Length: ")
-                                .or_else(|| l.strip_prefix("content-length: "))
-                        })
-                        .and_then(|v| v.trim().parse::<usize>().ok())
-                        .unwrap_or(0);
-                    let body_start = hdr_end + 4;
-                    if total >= body_start + content_len {
-                        break; // Got everything
-                    }
+            while total < buf.len() {
+                match tls.read(&mut buf[total..]) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => total += n,
                 }
-                if total >= buf.len() {
+                if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
                     break;
                 }
             }
-            let request = String::from_utf8_lossy(&buf[..total]);
-
-            // Parse method and path from first line
-            let first_line = request.lines().next().unwrap_or("");
-            let parts: Vec<&str> = first_line.split_whitespace().collect();
-            let method = parts.first().copied().unwrap_or("");
-            let path = parts.get(1).copied().unwrap_or("/");
+            let route = match evidence_route(&buf[..total]) {
+                Ok(route) => route,
+                Err((status, detail)) => {
+                    let _ = tls.write_all(http_response(status, detail).as_bytes());
+                    tls.conn.send_close_notify();
+                    let _ = tls.flush();
+                    return;
+                }
+            };
 
             // /eat gets a binary response — everything else stays text.
             // We split the response path so the CBOR bytes never pass
             // through the String-based response builder.
-            if method == "GET" && path == "/eat" {
+            if route == EvidenceRoute::Eat {
                 let header = format!(
                     "HTTP/1.1 200 OK\r\n\
                      Content-Type: application/eat+cbor\r\n\
@@ -286,25 +261,16 @@ pub fn serve_tls_vsock(
                 return;
             }
 
-            let response = match (method, path) {
+            let response = match route {
                 #[cfg(feature = "nitro")]
-                ("GET", "/kms-attestation") => handle_kms_attestation(&kms_st),
-                ("POST", "/kms-unwrap") => handle_kms_unwrap(&request, &kms_key),
-                ("POST", "/tls-cert") => handle_tls_cert_swap(&request, &live_cfg),
-                ("POST", "/acme-challenge") => handle_acme_challenge(&request, &live_cfg),
-                _ => {
-                    // Default: serve attestation JSON
-                    format!(
-                        "HTTP/1.1 200 OK\r\n\
-                         Content-Type: application/json\r\n\
-                         Content-Length: {}\r\n\
-                         Access-Control-Allow-Origin: *\r\n\
-                         \r\n\
-                         {}",
-                        body.len(),
-                        body
-                    )
-                }
+                EvidenceRoute::KmsAttestation => handle_kms_attestation(&kms_st),
+                #[cfg(not(feature = "nitro"))]
+                EvidenceRoute::KmsAttestation => http_response(404, "KMS evidence is unavailable"),
+                EvidenceRoute::Summary => format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(), body
+                ),
+                EvidenceRoute::Eat => unreachable!("binary EAT handled above"),
             };
 
             let _ = tls.write_all(response.as_bytes());
@@ -352,121 +318,80 @@ fn handle_kms_attestation(kms_state: &Option<std::sync::Arc<KmsState>>) -> Strin
     }
 }
 
-/// Handle POST /kms-unwrap: decrypt CiphertextForRecipient with the enclave's RSA key.
-///
-/// Request body: base64-encoded CiphertextForRecipient from KMS.
-/// Response: base64-encoded plaintext (the decrypted secret).
-///
-/// Flow:
-///   1. Parent calls `aws kms decrypt --recipient ...` → gets CiphertextForRecipient
-///   2. Parent sends it here via `curl -X POST https://.../kms-unwrap -d <base64>`
-///   3. Enclave decrypts with RSA private key → returns plaintext
-/// Handle POST /tls-cert: hot-swap the TLS certificate (normal mode).
-/// Body: PEM cert chain + private key concatenated.
-fn handle_tls_cert_swap(
-    request: &str,
-    live_config: &std::sync::Arc<std::sync::RwLock<std::sync::Arc<rustls::ServerConfig>>>,
-) -> String {
-    swap_tls_config(request, live_config, false)
+const MAX_HTTP_HEADER_BYTES: usize = 32 * 1024;
+
+#[derive(Debug, PartialEq, Eq)]
+enum EvidenceRoute {
+    Summary,
+    Eat,
+    KmsAttestation,
 }
 
-/// Handle POST /acme-challenge: install ACME challenge cert with acme-tls/1 ALPN.
-/// Body: PEM cert chain + private key concatenated.
-fn handle_acme_challenge(
-    request: &str,
-    live_config: &std::sync::Arc<std::sync::RwLock<std::sync::Arc<rustls::ServerConfig>>>,
-) -> String {
-    swap_tls_config(request, live_config, true)
-}
-
-fn swap_tls_config(
-    request: &str,
-    live_config: &std::sync::Arc<std::sync::RwLock<std::sync::Arc<rustls::ServerConfig>>>,
-    acme_alpn: bool,
-) -> String {
-    let body = match request.find("\r\n\r\n") {
-        Some(pos) => &request[pos + 4..],
-        None => return http_response(400, "malformed request"),
-    };
-
-    if body.is_empty() {
-        return http_response(400, "empty body — send PEM cert + key");
+/// Parse the complete public request before selecting a read-only handler.
+/// The public socket has no client authentication, so it cannot authorize key
+/// installation, challenge installation, or plaintext release.
+fn evidence_route(request: &[u8]) -> Result<EvidenceRoute, (u16, &'static str)> {
+    let bad = (400, "invalid read-only HTTP request");
+    if request.len() > MAX_HTTP_HEADER_BYTES {
+        return Err(bad);
     }
-
-    // For ACME challenge certs, use unchecked config (acmeIdentifier is a critical
-    // extension that rustls doesn't recognize). Normal certs use standard validation.
-    let config_result = if acme_alpn {
-        crate::net::tls::make_server_config_unchecked(body.as_bytes(), body.as_bytes())
-    } else {
-        crate::net::tls::make_server_config(body.as_bytes(), body.as_bytes())
-    };
-    match config_result {
-        Ok(mut new_config) => {
-            if acme_alpn {
-                // Accept both acme-tls/1 (for LE validation) and h2/http1.1 (for our own POST /tls-cert)
-                new_config.alpn_protocols = vec![b"acme-tls/1".to_vec(), b"http/1.1".to_vec()];
-                eprintln!("[uq/vsock] ACME challenge cert installed (alpn: acme-tls/1 + http/1.1)");
-            } else {
-                eprintln!("[uq/vsock] TLS cert hot-swapped");
-            }
-            let mut guard = live_config.write().unwrap();
-            *guard = std::sync::Arc::new(new_config);
-            http_response(200, "cert installed")
-        }
-        Err(e) => {
-            eprintln!("[uq/vsock] TLS cert swap failed: {e}");
-            http_response(400, &format!("invalid cert/key: {e}"))
-        }
-    }
-}
-
-fn handle_kms_unwrap(request: &str, kms_key: &Option<Vec<u8>>) -> String {
-    let kms_key = match kms_key {
-        Some(k) => k,
-        None => {
-            return http_response(400, "KMS key not available (not a Nitro enclave?)");
-        }
-    };
-
-    // Extract body after the \r\n\r\n header separator
-    let body = match request.find("\r\n\r\n") {
-        Some(pos) => request[pos + 4..].trim(),
-        None => {
-            return http_response(400, "malformed request");
-        }
-    };
-
-    if body.is_empty() {
-        return http_response(400, "empty body — send base64(CiphertextForRecipient)");
-    }
-
-    // Decode base64 ciphertext
-    use base64::Engine;
-    let ciphertext = match base64::engine::general_purpose::STANDARD.decode(body) {
-        Ok(c) => c,
-        Err(e) => {
-            return http_response(400, &format!("base64 decode error: {e}"));
-        }
-    };
-
-    // Decrypt with RSA-OAEP-SHA256
-    #[cfg(feature = "nitro")]
+    let end = request
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or(bad)?;
+    let header = std::str::from_utf8(&request[..end]).map_err(|_| bad)?;
+    let mut lines = header.split("\r\n");
+    let mut first = lines.next().ok_or(bad)?.split(' ');
+    let method = first.next().ok_or(bad)?;
+    let path = first.next().ok_or(bad)?;
+    if first.next() != Some("HTTP/1.1")
+        || first.next().is_some()
+        || path.contains(['?', '#'])
+        || !path.starts_with('/')
     {
-        match crate::tee::nitro::kms_decrypt(kms_key, &ciphertext) {
-            Ok(plaintext) => {
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&plaintext);
-                eprintln!("[uq/vsock] KMS unwrap: {} bytes decrypted", plaintext.len());
-                http_response(200, &b64)
+        return Err(bad);
+    }
+    let mut host_count = 0;
+    let mut length_count = 0;
+    for line in lines {
+        let (name, value) = line.split_once(':').ok_or(bad)?;
+        if name.is_empty()
+            || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            || value.bytes().any(|b| b < 0x20 && b != b'\t')
+        {
+            return Err(bad);
+        }
+        if name.eq_ignore_ascii_case("host") {
+            host_count += 1;
+            if value.trim().is_empty() {
+                return Err(bad);
             }
-            Err(e) => {
-                eprintln!("[uq/vsock] KMS unwrap failed: {e}");
-                http_response(500, &format!("decrypt failed: {e}"))
+        } else if name.eq_ignore_ascii_case("content-length") {
+            length_count += 1;
+            if value.trim() != "0" {
+                return Err(bad);
             }
+        } else if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err(bad);
         }
     }
-    #[cfg(not(feature = "nitro"))]
-    {
-        http_response(400, "KMS unwrap requires nitro feature")
+    if host_count != 1 || length_count > 1 || request.len() != end + 4 {
+        return Err(bad);
+    }
+    if matches!(path, "/kms-unwrap" | "/tls-cert" | "/acme-challenge") {
+        return Err((
+            403,
+            "administration and plaintext release are disabled on the public evidence listener",
+        ));
+    }
+    if method != "GET" {
+        return Err((405, "only read-only evidence requests are supported"));
+    }
+    match path {
+        "/" => Ok(EvidenceRoute::Summary),
+        "/eat" => Ok(EvidenceRoute::Eat),
+        "/kms-attestation" => Ok(EvidenceRoute::KmsAttestation),
+        _ => Err((404, "unknown evidence route")),
     }
 }
 
@@ -474,12 +399,16 @@ fn http_response(status: u16, body: &str) -> String {
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
         500 => "Internal Server Error",
         _ => "Error",
     };
     format!(
         "HTTP/1.1 {status} {reason}\r\n\
          Content-Type: text/plain\r\n\
+         Connection: close\r\n\
          Content-Length: {}\r\n\
          \r\n\
          {}",
@@ -649,4 +578,62 @@ fn pipe_tcp_to_vsock(tcp: std::net::TcpStream, enclave_cid: u32) -> Result<()> {
 
     let _ = handle.join();
     Ok(())
+}
+
+#[cfg(test)]
+mod admission_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn public_listener_never_authorizes_secret_release_or_tls_mutation() {
+        for path in ["/kms-unwrap", "/tls-cert", "/acme-challenge"] {
+            for method in ["GET", "POST", "PUT"] {
+                let request = format!("{method} {path} HTTP/1.1\r\nHost: enclave\r\n\r\n");
+                assert_eq!(evidence_route(request.as_bytes()).unwrap_err().0, 403);
+            }
+            let request =
+                format!("POST {path} HTTP/1.1\r\nHost: enclave\r\nContent-Length: 6\r\n\r\nsecret");
+            assert!(evidence_route(request.as_bytes()).is_err());
+        }
+    }
+
+    #[test]
+    fn public_evidence_routes_are_explicit_and_read_only() {
+        for (path, expected) in [
+            ("/", EvidenceRoute::Summary),
+            ("/eat", EvidenceRoute::Eat),
+            ("/kms-attestation", EvidenceRoute::KmsAttestation),
+        ] {
+            let request = format!("GET {path} HTTP/1.1\r\nHost: enclave\r\n\r\n");
+            assert_eq!(evidence_route(request.as_bytes()).unwrap(), expected);
+        }
+        assert_eq!(
+            evidence_route(b"POST / HTTP/1.1\r\nHost: enclave\r\n\r\n")
+                .unwrap_err()
+                .0,
+            405
+        );
+        assert_eq!(
+            evidence_route(b"GET /unknown HTTP/1.1\r\nHost: enclave\r\n\r\n")
+                .unwrap_err()
+                .0,
+            404
+        );
+    }
+
+    #[test]
+    fn ambiguous_framing_and_targets_are_rejected() {
+        for request in [
+            "GET /eat HTTP/1.1\r\nHost: first\r\nHost: second\r\n\r\n",
+            "GET /eat HTTP/1.1\r\nHost: enclave\r\nContent-Length: 0\r\ncontent-length: 0\r\n\r\n",
+            "GET /eat HTTP/1.1\r\nHost: enclave\r\nTransfer-Encoding: chunked\r\n\r\n",
+            "GET /eat?x HTTP/1.1\r\nHost: enclave\r\n\r\n",
+            "GET /eat#x HTTP/1.1\r\nHost: enclave\r\n\r\n",
+            "GET /eat HTTP/1.1\r\nHost: enclave\r\n\r\nPOST /tls-cert HTTP/1.1\r\n\r\n",
+            "GET /eat HTTP/1.1\r\nHost: enclave\r\nContent-Length : 0\r\n\r\n",
+            "GET /eat HTTP/1.1\r\nHost: enclave",
+        ] {
+            assert!(evidence_route(request.as_bytes()).is_err(), "{request:?}");
+        }
+    }
 }

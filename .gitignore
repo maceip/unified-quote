@@ -4,3 +4,4 @@
 .env
 # ssh keypairs from deploy scripts — never commit private keys
 *.pem
+.DS_Store

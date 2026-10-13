@@ -25,18 +25,14 @@
 //! - A bare base64 detached signature (tried against every
 //!   [`TrustedIdentity::RawPublicKey`] in the trust root).
 //!
-//! Verification is real: a `RawPublicKey` identity verifies the detached
-//! signature over the file bytes with the pinned SPKI; a `SigstoreKeyless`
-//! identity verifies the signature with the leaf certificate's key and then
-//! binds the certificate's SAN URI + Fulcio OIDC-issuer extension to the
-//! pinned `(issuer, subject_pattern)`. The on-disk format is stable: swapping
-//! or extending the verifier (e.g. adding Rekor inclusion) does not require a
-//! migration.
+//! `RawPublicKey` verification authenticates the exact file bytes with an
+//! independently pinned SPKI. `SigstoreKeyless` remains a parseable identity but
+//! cannot authorize entries until Fulcio trust and transparency evidence have
+//! a complete verifier. A self-asserted certificate identity is insufficient.
 //!
 //! See `v2/registry/README.md` for the schema and trust model.
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -512,15 +508,12 @@ impl Registry {
 
 /// Detached-signature sidecar verification.
 ///
-/// Verification is fully offline. For `SigstoreKeyless` identities we bind the
-/// leaf certificate's identity (SAN URI + Fulcio OIDC-issuer extension) to the
-/// pinned `(issuer, subject_pattern)` and verify the detached signature with
-/// the leaf key. Rekor transparency-log inclusion is an additional check that
-/// can be layered on without changing the on-disk format (tracked as R.2).
+/// Only independently pinned raw keys currently authorize registry contents.
+/// Keyless sidecars reject until their CA and transparency proofs are verified.
 mod sigverify {
     use super::TrustedIdentity;
     use base64::{engine::general_purpose::STANDARD as B64, Engine};
-    use der::{Decode, Encode};
+    use der::Decode;
     use sha2::{Digest, Sha256};
 
     /// Parsed sidecar: a detached signature plus optional algorithm hint and a
@@ -569,33 +562,9 @@ mod sigverify {
             TrustedIdentity::RawPublicKey { spki_der, .. } => {
                 verify_sig_with_spki(spki_der, msg, &sidecar.sig)
             }
-            TrustedIdentity::SigstoreKeyless {
-                issuer,
-                subject_pattern,
-            } => {
-                let pem = match &sidecar.cert_pem {
-                    Some(p) => p,
-                    None => return false, // keyless requires a leaf cert
-                };
-                let der = match pem_to_der(pem) {
-                    Some(d) => d,
-                    None => return false,
-                };
-                let cert = match x509_cert::Certificate::from_der(&der) {
-                    Ok(c) => c,
-                    Err(_) => return false,
-                };
-                // 1. the leaf key must have produced the detached signature.
-                let spki = match cert.tbs_certificate.subject_public_key_info.to_der() {
-                    Ok(s) => s,
-                    Err(_) => return false,
-                };
-                if !verify_sig_with_spki(&spki, msg, &sidecar.sig) {
-                    return false;
-                }
-                // 2. the leaf identity must match the pinned signer.
-                cert_identity_matches(&cert, issuer, subject_pattern)
-            }
+            // Leaf possession and SAN/OIDC labels alone do not authenticate
+            // a Fulcio issuer. Never promote them to SignatureState::Verified.
+            TrustedIdentity::SigstoreKeyless { .. } => false,
         }
     }
 
@@ -652,88 +621,10 @@ mod sigverify {
         }
     }
 
-    /// PEM (`-----BEGIN CERTIFICATE-----`) to DER.
-    fn pem_to_der(pem: &str) -> Option<Vec<u8>> {
-        let mut b64 = String::new();
-        let mut in_block = false;
-        for line in pem.lines() {
-            let t = line.trim();
-            if t.starts_with("-----BEGIN") {
-                in_block = true;
-                continue;
-            }
-            if t.starts_with("-----END") {
-                break;
-            }
-            if in_block {
-                b64.push_str(t);
-            }
-        }
-        if b64.is_empty() {
-            return None;
-        }
-        B64.decode(b64).ok()
-    }
-
-    /// Match a Fulcio leaf certificate against the pinned `(issuer,
-    /// subject_pattern)`: the SAN URI must glob-match `subject_pattern`, and
-    /// the OIDC issuer extension must equal `issuer`.
-    fn cert_identity_matches(
-        cert: &x509_cert::Certificate,
-        issuer: &str,
-        subject_pattern: &str,
-    ) -> bool {
-        let exts = match &cert.tbs_certificate.extensions {
-            Some(e) => e,
-            None => return false,
-        };
-        let mut san_ok = false;
-        let mut issuer_ok = false;
-        for ext in exts.iter() {
-            match ext.extn_id.to_string().as_str() {
-                // subjectAltName
-                "2.5.29.17" => {
-                    if let Ok(san) =
-                        x509_cert::ext::pkix::SubjectAltName::from_der(ext.extn_value.as_bytes())
-                    {
-                        for gn in san.0.iter() {
-                            if let x509_cert::ext::pkix::name::GeneralName::UniformResourceIdentifier(
-                                uri,
-                            ) = gn
-                            {
-                                if glob_match(subject_pattern, uri.as_str()) {
-                                    san_ok = true;
-                                }
-                            }
-                        }
-                    }
-                }
-                // Fulcio OIDC issuer (v1: raw UTF-8 string)
-                "1.3.6.1.4.1.57264.1.1" => {
-                    if std::str::from_utf8(ext.extn_value.as_bytes())
-                        .map(|s| s == issuer)
-                        .unwrap_or(false)
-                    {
-                        issuer_ok = true;
-                    }
-                }
-                // Fulcio OIDC issuer (v2: DER-encoded UTF8String)
-                "1.3.6.1.4.1.57264.1.8" => {
-                    if let Ok(s) = der::asn1::Utf8StringRef::from_der(ext.extn_value.as_bytes()) {
-                        if s.as_str() == issuer {
-                            issuer_ok = true;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        san_ok && issuer_ok
-    }
-
     /// Minimal glob: `*` matches any run of characters (greedy with
     /// backtracking). No `?`/character-class support — registry signer
     /// patterns only ever use `*`.
+    #[cfg(test)]
     pub fn glob_match(pattern: &str, value: &str) -> bool {
         fn rec(p: &[u8], v: &[u8]) -> bool {
             if p.is_empty() {
@@ -795,6 +686,41 @@ mod sig_tests {
             spki_der: spki,
             label: "test".into(),
         }
+    }
+
+    #[test]
+    fn self_signed_fulcio_identity_cannot_authorize_registry() {
+        use p256::ecdsa::{signature::Signer as _, Signature, SigningKey as P256SigningKey};
+        use p256::pkcs8::DecodePrivateKey;
+        let issuer = "https://token.actions.githubusercontent.com";
+        let subject =
+            "https://github.com/example/repo/.github/workflows/release.yml@refs/heads/main";
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.subject_alt_names = vec![rcgen::SanType::URI(subject.try_into().unwrap())];
+        params
+            .custom_extensions
+            .push(rcgen::CustomExtension::from_oid_content(
+                &[1, 3, 6, 1, 4, 1, 57264, 1, 1],
+                issuer.as_bytes().to_vec(),
+            ));
+        let cert = params.self_signed(&key).unwrap();
+        let body = b"forged approval";
+        let signing_key = P256SigningKey::from_pkcs8_der(&key.serialize_der()).unwrap();
+        let signature: Signature = signing_key.sign(body);
+        let sidecar = Sidecar {
+            sig: signature.to_der().as_bytes().to_vec(),
+            alg: Some("sigstore".into()),
+            cert_pem: Some(cert.pem()),
+        };
+        assert!(!verify_against(
+            &TrustedIdentity::SigstoreKeyless {
+                issuer: issuer.into(),
+                subject_pattern: subject.into()
+            },
+            body,
+            &sidecar
+        ));
     }
 
     #[test]

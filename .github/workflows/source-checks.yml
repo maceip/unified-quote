@@ -1,0 +1,32 @@
+name: Rust source checks
+on:
+  pull_request:
+    paths: ["v2/**", "Cargo.toml", "Cargo.lock", ".github/workflows/source-checks.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Format
+        run: cargo fmt --all --check
+      - name: CPU feature regression
+        run: cargo test --locked -p unified-quote
+      - name: GPU and boot implementation checks
+        run: cargo test --locked -p unified-quote --all-features
+      - name: Verifier feature isolation
+        run: cargo check --locked -p unified-quote --no-default-features --features gpu
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.3'
+          cache-dependency-path: v2/google-attestation/go.sum
+      - name: Google adapter checks
+        working-directory: v2/google-attestation
+        run: |
+          go test ./...
+          go vet ./...
+          ./build.sh "$RUNNER_TEMP/uq-google-attestation"
+      - name: Release consumer syntax
+        run: bash -n v2/deploy/fetch-verified-uq.sh

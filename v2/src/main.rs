@@ -30,18 +30,18 @@
 //!   4. Optionally verifies CT against a git repo
 //!   5. Optionally verifies A against a local artifact
 
-mod eat;
-mod net;
-mod quote;
-mod registry;
-mod tee;
-mod value_x;
+use unified_quote::{eat, net, quote, registry, tee, value_x};
+mod attestation_cli;
+mod boot_cli;
 
 use value_x::compute_tree_hash;
 
 use sha2::{Digest, Sha384};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+#[cfg(feature = "gpu")]
+mod gpu_cli;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -53,7 +53,35 @@ fn main() -> anyhow::Result<()> {
 
     match args[1].as_str() {
         "build" => cmd_build(&args[2..]),
+        "verify"
+            if args[2..].iter().any(|a| {
+                a == "--nonce"
+                    || a == "--expected-value-x"
+                    || a == "--expected-mrtd"
+                    || a == "--expected-platform-measurement"
+                    || a == "--cpu-collateral"
+                    || a == "--cpu-tcb-policy"
+                    || a == "--boot-policy"
+                    || a == "--google-boot-verifier"
+                    || a == "--prior-stage-policy"
+                    || a == "--azure-policy"
+                    || a == "--nitrotpm-policy"
+                    || a == "--uki"
+                    || a == "--in"
+                    || a == "--tls-spki"
+                    || a == "--gpu-policy"
+                    || a == "--require-gpu"
+                    || a == "--require-gpu-verified"
+            }) || args.get(2).is_some_and(|a| a.ends_with(".cbor")) =>
+        {
+            attestation_cli::verify(&args[2..])
+        }
         "verify" => cmd_verify(&args[2..]),
+        "verify-composite" => attestation_cli::verify(&args[2..]),
+        "collect" => attestation_cli::collect(&args[2..]),
+        "serve-attestation" => attestation_cli::serve(&args[2..]),
+        "boot" => boot_cli::run(&args[2..]),
+        "status" => attestation_cli::status(&args[2..]),
         "check" => cmd_check(&args[2..]),
         "enclave" => cmd_enclave(&args[2..]),
         "proxy" => cmd_proxy(&args[2..]),
@@ -65,13 +93,24 @@ fn main() -> anyhow::Result<()> {
                 Ok(rt) => rt.block_on(cmd_run(&args[2..])),
                 Err(_) => {
                     // Tokio failed (likely inside a Nitro Enclave).
-                    // Fall back to synchronous vsock-only path.
-                    eprintln!("[uq] Async runtime unavailable, using sync mode");
+                    // The synchronous entry point rejects because it cannot produce
+                    // a fresh admitted runtime chain.
+                    eprintln!("[uq] Async runtime unavailable; runtime admission cannot continue");
                     cmd_run_sync(&args[2..])
                 }
             }
         }
         "merge" => cmd_merge(&args[2..]),
+        "gpu" => {
+            #[cfg(feature = "gpu")]
+            {
+                gpu_cli::run(&args[2..])
+            }
+            #[cfg(not(feature = "gpu"))]
+            {
+                anyhow::bail!("GPU support requires rebuilding uq with --features gpu")
+            }
+        }
         #[cfg(feature = "sev-snp")]
         "azure" => cmd_azure(&args[2..]),
         _ => {
@@ -87,13 +126,25 @@ fn print_usage() {
     eprintln!();
     eprintln!("Usage:");
     eprintln!("  {bin} build   <source-dir> [--cmd \"...\"] [--output ./out]");
-    eprintln!("  {bin} verify  <attestation.json> [--source-dir <dir>] [--artifact <path>]");
-    eprintln!("  {bin} check   https://<domain>   (fetch + verify from a running enclave)");
-    eprintln!("  {bin} run     <dir> --attestation <attestation.json> [--cmd \"...\"]");
+    eprintln!("  {bin} verify  <attestation.json> [--source-dir <dir>] [--artifact <path>] (legacy signature inspection)");
+    eprintln!("  {bin} check   https://<domain>   (legacy certificate/quote inspection)");
+    eprintln!("  {bin} run     <dir> --attestation <receipt.cbor> --prior-stage-policy <policy.json> [--cmd \"...\"]");
     eprintln!("  {bin} enclave <source-dir> [--cmd \"...\"]  (Nitro: build+serve in one)");
     eprintln!("  {bin} proxy   --cid <enclave-cid> [--acme]  (parent: TCP:443 → vsock + ACME)");
     eprintln!("  {bin} merge   <att1.json> <att2.json> [...] --output merged.json");
-    eprintln!("  {bin} azure   collect|verify|check|serve   (Azure CVM: vTPM SNP → AMD root)");
+    eprintln!(
+        "  {bin} collect --nonce <64-hex> --tls-spki <der> --value-x <96-hex> [--gpu] --out <file>"
+    );
+    eprintln!("  {bin} verify-composite <file> --nonce <64-hex> --tls-spki <der> --value-x <96-hex> --expected-platform-measurement <96-hex> [--gpu-policy <json>] [--json]");
+    eprintln!(
+        "  {bin} serve-attestation --unix <socket> --tls-spki <der> --value-x <96-hex> [--gpu]"
+    );
+    eprintln!("  {bin} boot inspect|collect|closure (boot measurements and immutable closure)");
+    eprintln!("  {bin} status --json (local capabilities and driver-reported state)");
+    eprintln!("  {bin} azure   collect|verify   (legacy HCL collection/signature inspection; no admission)");
+    eprintln!(
+        "  {bin} gpu collect --nonce <64-hex> --out <file> [--format cbor|json] (raw evidence)"
+    );
 }
 
 fn cli_name() -> String {
@@ -431,14 +482,13 @@ fn cmd_build(args: &[String]) -> anyhow::Result<()> {
                 Ok(att) => {
                     eprintln!("[uq] NitroTPM: {} ", att.method);
                     eprintln!("[uq] NitroTPM digest: {}", hex::encode(att.digest));
-                    for (i, pcr) in att.pcrs.iter().enumerate() {
+                    for (i, pcr) in &att.pcrs {
                         eprintln!("[uq]   PCR{i}: {}", hex::encode(pcr));
                     }
                     Some(att)
                 }
                 Err(e) => {
-                    eprintln!("[uq] WARNING: NitroTPM collection failed: {e}");
-                    None
+                    anyhow::bail!("required NitroTPM collection failed: {e}")
                 }
             }
         } else {
@@ -497,6 +547,7 @@ fn cmd_build(args: &[String]) -> anyhow::Result<()> {
 
     // Build KMS-compatible condition fields per platform
     let kms_conditions = match evidence.platform {
+        quote::Platform::AzureSnpVtpm | quote::Platform::AwsSnpNitroTpm => serde_json::Value::Null,
         quote::Platform::Nitro => {
             // AWS KMS expects PCR values as 96-char hex (sha384)
             serde_json::json!({
@@ -537,7 +588,6 @@ fn cmd_build(args: &[String]) -> anyhow::Result<()> {
     let tpm_json = tpm_attestation.as_ref().map(|att| {
         use base64::Engine;
         let pcr_map: std::collections::BTreeMap<String, String> = att.pcrs.iter()
-            .enumerate()
             .map(|(i, pcr)| (format!("pcr{i}"), hex::encode(pcr)))
             .collect();
         let mut obj = serde_json::json!({
@@ -551,7 +601,7 @@ fn cmd_build(args: &[String]) -> anyhow::Result<()> {
                 base64::engine::general_purpose::STANDARD.encode(doc)
             );
             obj["note"] = serde_json::Value::String(
-                "COSE_Sign1 signed by Nitro Hypervisor (same PKI as Nitro Enclaves). Verify against AWS Nitro root CA.".into()
+                "Unverified NitroTPM document. Use the explicit AWS SNP/NitroTPM composite profile for challenge-bound admission.".into()
             );
         }
         obj
@@ -647,7 +697,9 @@ fn cmd_build(args: &[String]) -> anyhow::Result<()> {
 
 /// `uq check https://<domain>`
 ///
-/// Performs a full attested-TLS verification against a live enclave:
+/// Inspects legacy attested-TLS signatures and bindings against a live enclave.
+/// This path has no challenge, independently approved CPU identity, or current
+/// vendor TCB/revocation policy, and cannot grant production admission.
 ///
 /// 1. TLS handshake with the server. The cert is self-signed or
 ///    unknown-CA — we intentionally accept it because we're going to
@@ -682,7 +734,7 @@ fn cmd_check(args: &[String]) -> anyhow::Result<()> {
     .map(|(h, p)| (h.to_string(), p.parse::<u16>().unwrap_or(443)))
     .unwrap_or_else(|| (stripped.split('/').next().unwrap().to_string(), 443));
 
-    eprintln!("[uq] === attested-TLS check ===");
+    eprintln!("[uq] === Legacy attested-TLS signature inspection ===");
     eprintln!("[uq] Target: {host}:{port}");
 
     // Install ring crypto provider if not already
@@ -928,13 +980,14 @@ fn cmd_check(args: &[String]) -> anyhow::Result<()> {
     }
 
     eprintln!();
-    eprintln!("[uq] === Check Complete ===");
+    eprintln!("[uq] === Signature inspection complete ===");
     eprintln!(
-        "[uq] {} is a genuine {:?} TEE running Value X {}",
+        "[uq] {} presented a {:?} signed quote binding Value X {} to the observed TLS key",
         host,
         platform,
         &value_x_hex[..16]
     );
+    eprintln!("[uq] No admission verdict: use verify-composite with a fresh challenge, independent measurements and required vendor collateral/TCB policy.");
 
     Ok(())
 }
@@ -1162,11 +1215,10 @@ fn verify_attestation_json(
             std::process::exit(1);
         }
     };
-    let binding_arr: [u8; 32] = if binding_bytes.len() == 32 {
-        binding_bytes[..32].try_into().unwrap_or([0u8; 32])
-    } else {
-        [0u8; 32]
-    };
+    let binding_arr: [u8; 32] = binding_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("receipt binding must be exactly 32 bytes"))?;
     match quote::verify::verify_platform_quote(p, &quote_bytes, &binding_arr) {
         Ok(measurements) => {
             eprintln!("[uq] TEE signature chain: PASS");
@@ -1245,12 +1297,11 @@ fn verify_attestation_json(
     }
 
     eprintln!();
-    eprintln!("[uq] === Verification Complete ===");
+    eprintln!("[uq] === Legacy signature inspection complete ===");
     // Reaching here means the hardware signature chain verified — the only
     // non-error path through Check 4 above.
-    eprintln!(
-        "[uq] This artifact was built from this source inside genuine {platform_str} hardware."
-    );
+    eprintln!("[uq] The {platform_str} quote signature authenticates the receipt's hash binding.");
+    eprintln!("[uq] No admission or build-provenance verdict: independently approved builder measurements and vendor TCB/revocation policy are required.");
 
     Ok(())
 }
@@ -1282,6 +1333,7 @@ fn verify_attestation_json(
 async fn cmd_run(args: &[String]) -> anyhow::Result<()> {
     let mut work_dir: Option<PathBuf> = None;
     let mut stage0_path: Option<PathBuf> = None;
+    let mut prior_policy_path: Option<PathBuf> = None;
     let mut run_cmd: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
@@ -1289,6 +1341,10 @@ async fn cmd_run(args: &[String]) -> anyhow::Result<()> {
             "--attestation" => {
                 i += 1;
                 stage0_path = args.get(i).map(PathBuf::from);
+            }
+            "--prior-stage-policy" => {
+                i += 1;
+                prior_policy_path = args.get(i).map(PathBuf::from);
             }
             "--cmd" => {
                 i += 1;
@@ -1306,16 +1362,19 @@ async fn cmd_run(args: &[String]) -> anyhow::Result<()> {
     let work_dir = work_dir.ok_or_else(|| anyhow::anyhow!("working directory required"))?;
     let stage0_path =
         stage0_path.ok_or_else(|| anyhow::anyhow!("--attestation <stage0.cbor> required"))?;
+    let prior_policy_path = prior_policy_path.ok_or_else(|| {
+        anyhow::anyhow!("--prior-stage-policy <policy.json> required: runtime startup requires independent complete admission of the build ancestry")
+    })?;
 
-    // --- Step 1: confirm we're running inside a TEE ---
-    eprintln!("[uq] === Stage 1: Attested Runtime ===");
-    let tee_provider = tee::detect::detect_tee()
-        .map_err(|e| anyhow::anyhow!("Stage 1 must run inside a TEE: {e}"))?;
-    eprintln!("[uq] TEE: {:?}", tee_provider.platform());
-
-    // --- Step 2: load stage 0 EAT (CBOR, canonical format) ---
-    let stage0_cbor = std::fs::read(&stage0_path)
-        .map_err(|e| anyhow::anyhow!("read {}: {e}", stage0_path.display()))?;
+    // Admit the original, exact receipt bytes before device access or startup.
+    let policy: unified_quote::attestation_chain::PriorStagePolicy =
+        serde_json::from_slice(&read_runtime_input(&prior_policy_path, 32 * 1024 * 1024)?)?;
+    policy.validate()?;
+    let stage0_cbor = read_runtime_input(
+        &stage0_path,
+        unified_quote::attestation_chain::MAX_STAGE_RECEIPT_BYTES,
+    )?;
+    let admitted = policy.verify(&stage0_cbor)?;
     eprintln!(
         "[uq] Stage 0 EAT: {} bytes from {}",
         stage0_cbor.len(),
@@ -1325,30 +1384,15 @@ async fn cmd_run(args: &[String]) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("decode stage 0 EAT: {e}"))?;
     eprintln!("[uq] Stage 0 Value X: {}", hex::encode(stage0_eat.value_x));
 
-    // --- Step 3: verify stage 0's quote ---
-    // The producer cannot be trusted; we verify stage 0 at boot.
-    // This is LATTE: the verifier (stage 1 at boot) checks the platform
-    // layer of the previous stage independently before trusting any
-    // of its claims.
-    let stage0_platform = stage0_eat
-        .platform_enum()
-        .ok_or_else(|| anyhow::anyhow!("stage 0 has unknown platform discriminant"))?;
-    let stage0_binding = stage0_eat.binding_bytes();
-    match quote::verify::verify_platform_quote(
-        stage0_platform,
-        &stage0_eat.platform_quote,
-        &stage0_binding,
-    ) {
-        Ok(measurements) => {
-            eprintln!("[uq] Stage 0 quote: PASS");
-            for (name, val) in &measurements {
-                eprintln!("[uq]   {}: {}", name, hex::encode(val));
-            }
-        }
-        Err(e) => {
-            anyhow::bail!("Stage 1 refuses to boot: stage 0 quote verification failed — {e}");
-        }
-    }
+    eprintln!(
+        "[uq] Admitted {} prior stages against independent policy",
+        admitted.stage_count()
+    );
+
+    eprintln!("[uq] === Stage 1: Attested Runtime ===");
+    let tee_provider = tee::detect::detect_tee()
+        .map_err(|e| anyhow::anyhow!("Stage 1 must run inside a TEE: {e}"))?;
+    eprintln!("[uq] TEE: {:?}", tee_provider.platform());
 
     // --- Step 4: re-compute Value X from disk ---
     // AC ratchet-at-boot: what's on disk now must match what the
@@ -1379,6 +1423,7 @@ async fn cmd_run(args: &[String]) -> anyhow::Result<()> {
         platform_measurement: Vec::new(), // filled after quote collection
         platform_quote: Vec::new(),       // filled after quote collection
     });
+    stage1.binding_suite = eat::BINDING_SUITE_V3_SHA256_DUAL;
     stage1.tls_spki_hash = tls_spki_hash;
     stage1.set_previous(stage0_cbor);
 
@@ -1444,8 +1489,8 @@ async fn cmd_run(args: &[String]) -> anyhow::Result<()> {
 
     // --- Step 10: serve ---
     eprintln!();
-    eprintln!("[uq] === Stage 1 Verified ===");
-    eprintln!("[uq] Chain: source → attested build → attested runtime");
+    eprintln!("[uq] === Runtime evidence collected ===");
+    eprintln!("[uq] Prior stages admitted; relying parties must independently appraise the current runtime evidence");
     eprintln!("[uq] Value X: {}", hex::encode(current_x));
 
     let tls_state = Arc::new(net::tls::TlsState::new_with_pem(
@@ -1498,9 +1543,11 @@ async fn cmd_run(args: &[String]) -> anyhow::Result<()> {
 fn cmd_enclave(args: &[String]) -> anyhow::Result<()> {
     let mut source_dir: Option<PathBuf> = None;
     let mut build_cmd: Option<String> = None;
+    let mut no_tls = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--no-tls" => no_tls = true,
             "--cmd" => {
                 i += 1;
                 build_cmd = args.get(i).map(|s| s.to_string());
@@ -1695,8 +1742,8 @@ fn cmd_enclave(args: &[String]) -> anyhow::Result<()> {
         "kms": {
             "has_rsa_key": kms_private_key.is_some(),
             "fresh_attestation": "/kms-attestation",
-            "unwrap_endpoint": "/kms-unwrap",
-            "usage": "1) GET /kms-attestation → fresh doc  2) aws kms decrypt --recipient ...  3) POST /kms-unwrap"
+            "administrative_routes_enabled": false,
+            "usage": "GET /kms-attestation returns fresh evidence; remote key operations are disabled"
         }
     });
 
@@ -1714,122 +1761,68 @@ fn cmd_enclave(args: &[String]) -> anyhow::Result<()> {
     eprintln!("[uq] Value X: {}", hex::encode(value_x));
     eprintln!("[uq] Domain: {domain}");
     if kms_private_key.is_some() {
-        eprintln!("[uq] KMS: GET /kms-attestation (fresh doc) + POST /kms-unwrap");
+        eprintln!("[uq] KMS: GET /kms-attestation (fresh document; remote unwrap disabled)");
     }
 
-    // Try TLS on vsock first. If ring crypto fails (some enclaves), fall back to plain vsock.
     eprintln!("[uq] Parent should run: uq proxy --cid <enclave-cid>");
-
-    match rustls::crypto::ring::default_provider().install_default() {
-        Ok(_) => {
-            // attested-TLS cert: the enclave-generated keypair + self-signed cert
-            // + EAT CBOR as a critical extension. Reusing the same keypair
-            // whose SPKI hash is in eat.tls_spki_hash is the whole point.
-            let tls_config = {
-                let ac = net::attested_tls::make_attested_cert(&tls_kp, &domain, &eat_cbor)?;
-                eprintln!(
-                    "[uq] attested-TLS cert built ({} bytes DER, EAT extension marked critical)",
-                    ac.cert_der.len()
-                );
-                net::tls::make_server_config(ac.cert_pem.as_bytes(), ac.key_pem.as_bytes())?
-            };
-            eprintln!("[uq] TLS on vsock (inside enclave)");
-            #[cfg(all(feature = "nitro", unix))]
-            {
-                net::vsock::serve_tls_vsock(
-                    Arc::new(tls_config),
-                    &attestation_json,
-                    &eat_cbor,
-                    kms_private_key,
-                    kms_state,
-                )?;
-            }
-            #[cfg(not(all(feature = "nitro", unix)))]
-            {
-                net::vsock::serve_tls_vsock(
-                    Arc::new(tls_config),
-                    &attestation_json,
-                    &eat_cbor,
-                    kms_private_key,
-                )?;
-            }
-        }
-        Err(_) => {
-            eprintln!("[uq] TLS crypto unavailable — serving plain HTTP on vsock");
-            net::vsock::serve_vsock(&attestation_json)?;
-        }
+    if no_tls {
+        eprintln!("[uq] Explicit --no-tls: serving raw evidence on an unauthenticated transport; this does not establish an attested TLS channel");
+        return net::vsock::serve_vsock(&attestation_json);
     }
+
+    // install_default returns Err when another provider is already installed;
+    // that is not a reason to downgrade an encrypted listener to plaintext.
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+    anyhow::ensure!(
+        rustls::crypto::CryptoProvider::get_default().is_some(),
+        "TLS provider initialization failed; plaintext fallback is forbidden"
+    );
+    let ac = net::attested_tls::make_attested_cert(&tls_kp, &domain, &eat_cbor)?;
+    let tls_config = net::tls::make_server_config(ac.cert_pem.as_bytes(), ac.key_pem.as_bytes())?;
+    eprintln!("[uq] Attested TLS on vsock (inside enclave)");
+    #[cfg(all(feature = "nitro", unix))]
+    net::vsock::serve_tls_vsock(
+        Arc::new(tls_config),
+        &attestation_json,
+        &eat_cbor,
+        kms_private_key,
+        kms_state,
+    )?;
+    #[cfg(not(all(feature = "nitro", unix)))]
+    net::vsock::serve_tls_vsock(
+        Arc::new(tls_config),
+        &attestation_json,
+        &eat_cbor,
+        kms_private_key,
+    )?;
 
     Ok(())
 }
 
 // ============================================================================
-// RUN SYNC — fallback for Nitro Enclaves where tokio doesn't work
+// RUN SYNC — fail closed when the authenticated runtime cannot start
 // ============================================================================
 
-fn cmd_run_sync(args: &[String]) -> anyhow::Result<()> {
-    let mut work_dir: Option<PathBuf> = None;
-    let mut attestation_path: Option<PathBuf> = None;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--attestation" => {
-                i += 1;
-                attestation_path = args.get(i).map(|s| PathBuf::from(s));
-            }
-            _ => {
-                if work_dir.is_none() {
-                    work_dir = Some(PathBuf::from(&args[i]));
-                }
-            }
-        }
-        i += 1;
-    }
+fn cmd_run_sync(_args: &[String]) -> anyhow::Result<()> {
+    anyhow::bail!("synchronous legacy runtime admission is unsupported: a build receipt cannot attest the current runtime or TLS key; start the authenticated runtime with --prior-stage-policy")
+}
 
-    let work_dir = work_dir.ok_or_else(|| anyhow::anyhow!("working directory required"))?;
-    let attestation_path =
-        attestation_path.ok_or_else(|| anyhow::anyhow!("--attestation <path> required"))?;
-
-    eprintln!("[uq] Stage 1 (sync mode): self-verification");
-
-    // Load and verify attestation
-    let att_contents = std::fs::read_to_string(&attestation_path)?;
-    let att_json: serde_json::Value = serde_json::from_str(&att_contents)?;
-
-    let stage0_x = att_json["value_x"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("missing value_x"))?;
-
-    eprintln!("[uq] Stage 0 Value X: {}", &stage0_x[..24]);
-
-    // Re-compute Value X
-    let current_x = compute_tree_hash(&work_dir)?;
-    let current_x_hex = hex::encode(current_x);
-
-    if current_x_hex != stage0_x {
-        eprintln!("[uq] FATAL: Value X mismatch");
-        eprintln!("[uq]   stage 0: {stage0_x}");
-        eprintln!("[uq]   current: {current_x_hex}");
-        std::process::exit(1);
-    }
-    eprintln!("[uq] Value X: MATCHES");
-
-    // In sync mode (Nitro Enclave), serve the stage 0 attestation directly.
-    // The stage 0 quote already contains the Nitro attestation with Value X bound.
-    // Re-collecting a quote would require re-initializing the NSM device which
-    // may fail if it's already been used by stage 0.
-    let attestation_json = att_contents;
-    eprintln!("[uq] === Stage 1 Verified (sync) ===");
-    eprintln!("[uq] Value X: {current_x_hex}");
-
-    // Serve via vsock (blocking)
-    let domain = net::acme::domain_from_value_x(&current_x);
-    eprintln!("[uq] Domain: {domain}");
-    eprintln!("[uq] Serving via vsock on port {}", net::vsock::VSOCK_PORT);
-
-    net::vsock::serve_vsock(&attestation_json)?;
-
-    Ok(())
+/// Bound policy and receipt reads before allocating or parsing untrusted input.
+fn read_runtime_input(path: &std::path::Path, limit: usize) -> anyhow::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        bytes.len() <= limit,
+        "{} exceeds the {} byte input limit",
+        path.display(),
+        limit
+    );
+    Ok(bytes)
 }
 
 // ============================================================================
@@ -2127,6 +2120,7 @@ fn copy_dir_readonly(src: &Path, dst: &Path) -> anyhow::Result<()> {
 /// Nitro: PCR0 (from CBOR payload)
 fn extract_platform_measurement(quote: &[u8], platform: &quote::Platform) -> Option<Vec<u8>> {
     match platform {
+        quote::Platform::AzureSnpVtpm | quote::Platform::AwsSnpNitroTpm => None,
         quote::Platform::Tdx => {
             if quote.len() >= 632 {
                 let body = &quote[48..632];
@@ -2259,6 +2253,12 @@ fn cmd_azure(args: &[String]) -> anyhow::Result<()> {
         Ok(Some(arr))
     };
 
+    // These legacy network paths lack an independently configured, fresh AK
+    // challenge and current AMD collateral/TCB policy. Inspection is not admission.
+    if matches!(sub, "check" | "check-tls" | "serve" | "serve-tls") {
+        azure::require_admission_support().map_err(anyhow::Error::msg)?;
+    }
+
     match sub {
         "collect" => {
             let out = flag("-o", "azure-bundle.json");
@@ -2282,7 +2282,7 @@ fn cmd_azure(args: &[String]) -> anyhow::Result<()> {
             let verdict = azure::verify_bundle(&bundle).map_err(|e| anyhow::anyhow!(e))?;
             print_azure_verdict(&verdict);
             std::fs::write("azure-attest.json", serde_json::to_string_pretty(&verdict)?)?;
-            if verdict.verdict != "verified" {
+            if verdict.verdict != azure::INSPECTION_VERDICT {
                 std::process::exit(1);
             }
             Ok(())
@@ -2299,164 +2299,19 @@ fn cmd_azure(args: &[String]) -> anyhow::Result<()> {
                 azure::verify_hcl(&raw).map_err(|e| anyhow::anyhow!(e))?
             };
             print_azure_verdict(&verdict);
-            if verdict.verdict != "verified" {
+            if verdict.verdict != azure::INSPECTION_VERDICT {
                 std::process::exit(1);
             }
             Ok(())
         }
-        "check" => {
-            let url = positional()
-                .ok_or_else(|| anyhow::anyhow!("usage: uq azure check http://<host>[:port]/"))?;
-            let base = url.trim_end_matches('/');
-            let client = reqwest::blocking::Client::builder()
-                .danger_accept_invalid_certs(true)
-                .timeout(std::time::Duration::from_secs(15))
-                .build()?;
-            // Prefer the richer bundle (carries value_x binding); fall back to raw HCL.
-            let bundle_url = format!("{base}/bundle.json");
-            eprintln!("[uq/azure] Fetching evidence: {bundle_url}");
-            let bundle_resp = client.get(&bundle_url).send();
-            let verdict = match bundle_resp {
-                Ok(r) if r.status().is_success() => {
-                    let bundle: azure::AzureBundle = serde_json::from_slice(&r.bytes()?)?;
-                    eprintln!("[uq/azure] Got bundle; verifying against AMD root…");
-                    azure::verify_bundle(&bundle).map_err(|e| anyhow::anyhow!(e))?
-                }
-                _ => {
-                    let target = format!("{base}/azure-hcl.bin");
-                    eprintln!("[uq/azure] No bundle.json; falling back to {target}");
-                    let resp = client.get(&target).send()?;
-                    if !resp.status().is_success() {
-                        anyhow::bail!("endpoint returned HTTP {}", resp.status());
-                    }
-                    let hcl = resp.bytes()?.to_vec();
-                    azure::verify_hcl(&hcl).map_err(|e| anyhow::anyhow!(e))?
-                }
-            };
-            print_azure_verdict(&verdict);
-            if verdict.verdict != "verified" {
-                std::process::exit(1);
-            }
-            Ok(())
-        }
-        "serve" => {
-            let path = flag("-f", "azure-bundle.json");
-            let port: u16 = flag("--port", "8443").parse().unwrap_or(8443);
-            // Load a bundle if present, else wrap a raw HCL file as a bundle.
-            let bundle: azure::AzureBundle = if path.ends_with(".json") {
-                serde_json::from_slice(&std::fs::read(&path)?)?
-            } else {
-                let hcl = std::fs::read(&path)?;
-                azure::AzureBundle {
-                    version: 1,
-                    platform: "azure-sev-snp-vtpm".into(),
-                    hcl: hex::encode(hcl),
-                    tpm_quote_msg: None,
-                    tpm_quote_sig: None,
-                    value_x: None,
-                    tls_spki: None,
-                }
-            };
-            // Pre-verify so we only serve self-authenticating, valid evidence.
-            let verdict = azure::verify_bundle(&bundle).map_err(|e| anyhow::anyhow!(e))?;
-            let verdict_json = serde_json::to_string_pretty(&verdict)?;
-            let bundle_json = serde_json::to_string(&bundle)?;
-            let hcl = hex::decode(&bundle.hcl)?;
-            serve_azure_evidence(port, hcl, bundle_json, verdict_json)
-        }
-        "serve-tls" => {
-            let domain = flag("--domain", "attest.secure.build");
-            let port: u16 = flag("--port", "8443").parse().unwrap_or(8443);
-            let vx = parse_binding()?.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "serve-tls requires --value-x <hex32> (the source identity to bind)"
-                )
-            })?;
-            eprintln!(
-                "[uq/azure] Minting attested-TLS cert for {domain} (value_x {})",
-                hex::encode(vx)
-            );
-            let (cert, _bundle) =
-                azure::collect_attested_cert(&domain, &vx).map_err(|e| anyhow::anyhow!(e))?;
-            // Self-check before serving: only expose evidence that verifies.
-            let verdict =
-                azure::verify_attested_cert(&cert.cert_der).map_err(|e| anyhow::anyhow!(e))?;
-            print_azure_verdict(&verdict);
-            if verdict.verdict != "verified" {
-                anyhow::bail!("refusing to serve: self-verification failed");
-            }
-            let verdict_json = serde_json::to_string_pretty(&verdict)?;
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async move {
-                let state = std::sync::Arc::new(
-                    net::tls::TlsState::new_with_pem(
-                        cert.cert_pem.as_bytes(),
-                        cert.key_pem.as_bytes(),
-                    )
-                    .map_err(|e| anyhow::anyhow!(e))?,
-                );
-                state.set_attestation(verdict_json).await;
-                eprintln!("[uq/azure] attested-TLS on 0.0.0.0:{port} — cert carries the SNP→AMD bundle + value_x");
-                net::tls::serve(state, port).await
-            })
-        }
-        "check-tls" => {
-            let url = positional().ok_or_else(|| {
-                anyhow::anyhow!("usage: uq azure check-tls https://<host>[:port]/")
-            })?;
-            let stripped = url.strip_prefix("https://").unwrap_or(&url);
-            let hostport = stripped.split('/').next().unwrap_or(stripped);
-            let (host, port) = hostport
-                .split_once(':')
-                .map(|(h, p)| (h.to_string(), p.parse::<u16>().unwrap_or(8443)))
-                .unwrap_or_else(|| (hostport.to_string(), 8443));
-            eprintln!("[uq/azure] attested-TLS check: {host}:{port}");
-
-            let _ = rustls::crypto::ring::default_provider().install_default();
-            let client_config = build_unchecked_client_config();
-            let server_name = rustls::pki_types::ServerName::try_from(host.clone())
-                .map_err(|e| anyhow::anyhow!("invalid server name {host}: {e}"))?;
-            let mut conn =
-                rustls::ClientConnection::new(std::sync::Arc::new(client_config), server_name)
-                    .map_err(|e| anyhow::anyhow!("rustls client: {e}"))?;
-            let mut sock = std::net::TcpStream::connect((host.as_str(), port))
-                .map_err(|e| anyhow::anyhow!("tcp connect {host}:{port}: {e}"))?;
-            let mut tls = rustls::Stream::new(&mut conn, &mut sock);
-            use std::io::{Read, Write};
-            let req = format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
-            tls.write_all(req.as_bytes())
-                .map_err(|e| anyhow::anyhow!("TLS write: {e}"))?;
-            let mut resp = Vec::new();
-            let _ = tls.read_to_end(&mut resp);
-
-            let certs = conn
-                .peer_certificates()
-                .ok_or_else(|| anyhow::anyhow!("peer presented no certificates"))?;
-            let leaf = certs
-                .first()
-                .ok_or_else(|| anyhow::anyhow!("empty peer cert chain"))?;
-            let leaf_der = leaf.as_ref().to_vec();
-            eprintln!(
-                "[uq/azure] Leaf cert: {} bytes DER; verifying embedded evidence…",
-                leaf_der.len()
-            );
-
-            let verdict = azure::verify_attested_cert(&leaf_der).map_err(|e| anyhow::anyhow!(e))?;
-            eprintln!("[uq/azure] channel binding: PASS (cert SPKI bound into AK quote)");
-            print_azure_verdict(&verdict);
-            if verdict.verdict != "verified" {
-                std::process::exit(1);
-            }
-            Ok(())
+        "check" | "check-tls" | "serve" | "serve-tls" => {
+            azure::require_admission_support().map_err(anyhow::Error::msg)
         }
         _ => {
             eprintln!("Usage:");
             eprintln!("  uq azure collect   [--value-x <hex32>] [-o azure-bundle.json]   (on the Azure CVM)");
             eprintln!("  uq azure verify    <azure-bundle.json | azure-hcl.bin>");
-            eprintln!("  uq azure check     http://<host>[:port]/");
-            eprintln!("  uq azure serve     [-f azure-bundle.json] [--port 8443]");
-            eprintln!("  uq azure serve-tls --value-x <hex32> [--domain attest.secure.build] [--port 8443]");
-            eprintln!("  uq azure check-tls https://<host>[:port]/");
+            eprintln!("For admission, use collect/serve-attestation --cpu-profile azure-snp-vtpm and verify-composite --platform azure-snp-vtpm --azure-policy FILE.");
             std::process::exit(1);
         }
     }
@@ -2466,6 +2321,8 @@ fn cmd_azure(args: &[String]) -> anyhow::Result<()> {
 fn print_azure_verdict(v: &unified_quote::tee::azure::AzureVerdict) {
     eprintln!("[uq/azure] === Azure SEV-SNP (vTPM → AMD root) ===");
     eprintln!("[uq/azure] verdict:        {}", v.verdict);
+    eprintln!("[uq/azure] admission:      {}", v.is_admitted());
+    eprintln!("[uq/azure] Scope: signature inspection only; no current collateral, freshness or independent launch policy admission");
     eprintln!("[uq/azure] measurement:    {}", v.measurement);
     eprintln!("[uq/azure] sig_verified:   {}", v.sig_verified);
     eprintln!("[uq/azure] chain_verified: {}", v.chain_verified);
@@ -2484,60 +2341,44 @@ fn print_azure_verdict(v: &unified_quote::tee::azure::AzureVerdict) {
     }
 }
 
-/// Minimal blocking HTTP/1.1 server exposing the self-authenticating evidence:
-///   GET /azure-hcl.bin -> raw HCL report (verifiable to the AMD root anywhere)
-///   GET /bundle.json   -> full bundle (HCL + AK quote binding value_x)
-///   GET /              -> JSON verdict
-#[cfg(feature = "sev-snp")]
-fn serve_azure_evidence(
-    port: u16,
-    hcl: Vec<u8>,
-    bundle_json: String,
-    verdict_json: String,
-) -> anyhow::Result<()> {
-    use std::io::{Read, Write};
-    let listener = std::net::TcpListener::bind(("0.0.0.0", port))?;
-    eprintln!("[uq/azure] Serving evidence on 0.0.0.0:{port}");
-    eprintln!("[uq/azure]   GET /azure-hcl.bin   (raw SNP report, AMD-verifiable)");
-    eprintln!("[uq/azure]   GET /bundle.json     (HCL + AK quote binding value_x)");
-    eprintln!("[uq/azure]   GET /                (JSON verdict)");
-    for stream in listener.incoming() {
-        let mut stream = match stream {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let mut buf = [0u8; 1024];
-        let n = stream.read(&mut buf).unwrap_or(0);
-        let req = String::from_utf8_lossy(&buf[..n]);
-        let path = req
-            .lines()
-            .next()
-            .and_then(|l| l.split_whitespace().nth(1))
-            .unwrap_or("/");
-        let (status, ctype, body): (&str, &str, Vec<u8>) = if path.starts_with("/azure-hcl.bin") {
-            ("200 OK", "application/octet-stream", hcl.clone())
-        } else if path.starts_with("/bundle.json") {
-            (
-                "200 OK",
-                "application/json",
-                bundle_json.clone().into_bytes(),
-            )
-        } else if path == "/" {
-            (
-                "200 OK",
-                "application/json",
-                verdict_json.clone().into_bytes(),
-            )
-        } else {
-            ("404 Not Found", "text/plain", b"not found".to_vec())
-        };
-        let header = format!(
-            "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
-            body.len()
-        );
-        let _ = stream.write_all(header.as_bytes());
-        let _ = stream.write_all(&body);
-        let _ = stream.flush();
+#[cfg(test)]
+mod legacy_admission_boundary_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn runtime_requires_independent_policy_before_device_or_file_access() {
+        let args = [
+            "nonexistent-runtime",
+            "--attestation",
+            "nonexistent-receipt",
+        ]
+        .map(String::from);
+        let error = cmd_run(&args).await.unwrap_err();
+        assert!(error.to_string().contains("--prior-stage-policy"));
     }
-    Ok(())
+
+    #[test]
+    fn sync_runtime_cannot_relabel_a_build_receipt_as_runtime_admission() {
+        let error = cmd_run_sync(&[]).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("build receipt cannot attest the current runtime"));
+    }
+
+    #[test]
+    fn runtime_policy_reads_are_bounded_before_parsing() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), [1u8; 17]).unwrap();
+        assert!(read_runtime_input(file.path(), 16).is_err());
+        assert_eq!(read_runtime_input(file.path(), 17).unwrap().len(), 17);
+    }
+
+    #[cfg(feature = "sev-snp")]
+    #[test]
+    fn legacy_azure_network_commands_fail_before_network_or_hardware() {
+        for command in ["check", "check-tls", "serve", "serve-tls"] {
+            let error = cmd_azure(&[command.into()]).unwrap_err();
+            assert!(error.to_string().contains("admission is unsupported"));
+        }
+    }
 }

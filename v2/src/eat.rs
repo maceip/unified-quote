@@ -81,6 +81,9 @@ pub const EAT_PROFILE_ACCEPTED: &[&str] = &[EAT_PROFILE, "https://bountynet.dev/
 ///   commitment (see [`EatToken::second_commitment`]).
 pub const BINDING_SUITE_V2_SHA256: u16 = 0;
 pub const BINDING_SUITE_V3_SHA256_DUAL: u16 = 1;
+/// Composite evidence: commits the exact GPU and boot evidence bytes into the
+/// CPU quote, in addition to the nonce, TLS key and application identity.
+pub const BINDING_SUITE_COMPOSITE: u16 = 2;
 /// Suite a fresh producer uses unless it opts into a newer one.
 pub const DEFAULT_BINDING_SUITE: u16 = BINDING_SUITE_V2_SHA256;
 
@@ -101,6 +104,8 @@ pub const EAT_NONCE_ENV: &str = "UQ_EAT_NONCE";
 /// Errors produced by encoding/decoding an EAT.
 #[derive(Debug, thiserror::Error)]
 pub enum EatError {
+    #[error("invalid EAT shape: {0}")]
+    Shape(String),
     #[error("CBOR encode failed: {0}")]
     Encode(String),
     #[error("CBOR decode failed: {0}")]
@@ -123,6 +128,7 @@ pub enum EatError {
 ///
 /// All `Vec<u8>` fields are CBOR byte strings via `serde_bytes`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EatToken {
     /// Schema version. Must equal [`EAT_VERSION`] for today's format.
     pub version: u32,
@@ -141,7 +147,8 @@ pub struct EatToken {
     #[serde(with = "serde_bytes_48")]
     pub value_x: [u8; 48],
 
-    /// TEE platform discriminant: 1=Nitro, 2=SevSnp, 3=Tdx.
+    /// TEE platform: 1=Nitro, 2=SevSnp, 3=Tdx, 4=AzureSnpVtpm,
+    /// 5=AwsSnpNitroTpm. Composite TPM profiles require binding suite 2.
     pub platform: u8,
 
     /// Platform measurement extracted from the quote:
@@ -190,15 +197,28 @@ pub struct EatToken {
     /// mixed into this stage's `binding_bytes()`, which is then placed
     /// in `report_data[0..32]` of this stage's hardware quote.
     ///
-    /// A verifier walks the chain by decoding this field as another
+    /// A build-chain verifier must walk the chain by decoding this field as another
     /// `EatToken` and recursively verifying it. Value X must be stable
     /// across the chain (the runtime is running the same code the
     /// builder produced), and each stage's platform quote must chain
     /// to the previous via the `previous_hash()` commitment.
+    /// The composite runtime verifier currently rejects a nonempty chain because
+    /// its policy authenticates only the current runtime stage.
     ///
     /// Not in `binding_bytes()` directly — `previous_hash()` is.
     #[serde(with = "serde_bytes", default, skip_serializing_if = "Vec::is_empty")]
     pub previous_attestation: Vec<u8>,
+
+    /// Raw GPU bundle (CBOR). Suite 2 commits these exact bytes. Its contents
+    /// remain unappraised until the GPU verifier succeeds; a CPU commitment
+    /// proves neither GPU validity nor physical CPU/GPU attachment.
+    #[serde(with = "serde_bytes", default, skip_serializing_if = "Vec::is_empty")]
+    pub gpu_evidence: Vec<u8>,
+
+    /// Raw boot event log. Suite 2 commits these bytes; event-log replay must
+    /// independently agree with the hardware-signed registers.
+    #[serde(with = "serde_bytes", default, skip_serializing_if = "Vec::is_empty")]
+    pub boot_evidence: Vec<u8>,
 }
 
 impl EatToken {
@@ -234,11 +254,27 @@ impl EatToken {
     /// binding.
     pub fn binding_bytes(&self) -> [u8; 32] {
         match self.binding_suite {
+            BINDING_SUITE_COMPOSITE => {
+                let mut h = Sha256::new();
+                h.update(b"uq/eat/composite/v1\0");
+                h.update(self.binding_bytes_v3());
+                h.update((self.gpu_evidence.len() as u64).to_be_bytes());
+                h.update(Sha256::digest(&self.gpu_evidence));
+                h.update((self.boot_evidence.len() as u64).to_be_bytes());
+                h.update(Sha256::digest(&self.boot_evidence));
+                h.finalize().into()
+            }
             BINDING_SUITE_V3_SHA256_DUAL => self.binding_bytes_v3(),
-            // Suite 0 (and any unknown — validate_shape rejects unknowns
-            // before this is reached on the verify path) use the historical
-            // layout, which intentionally does NOT hash the suite id.
-            _ => self.binding_bytes_v2(),
+            BINDING_SUITE_V2_SHA256 => self.binding_bytes_v2(),
+            // Unknown suites never alias a supported suite even for a caller
+            // that incorrectly skips shape validation.
+            _ => {
+                let mut h = Sha256::new();
+                h.update(b"uq/eat/unsupported-suite\0");
+                h.update(self.binding_suite.to_be_bytes());
+                h.update(self.binding_bytes_v3());
+                h.finalize().into()
+            }
         }
     }
 
@@ -369,13 +405,20 @@ impl EatToken {
     /// binding against report_data — those are the caller's job and live
     /// in the attested-TLS verifier.
     pub fn from_cbor(bytes: &[u8]) -> Result<Self, EatError> {
+        if bytes.len() > 32 * 1024 * 1024 {
+            return Err(EatError::Shape("token exceeds 32 MiB".into()));
+        }
+        let mut cursor = std::io::Cursor::new(bytes);
         let token: Self =
-            ciborium::de::from_reader(bytes).map_err(|e| EatError::Decode(e.to_string()))?;
+            ciborium::de::from_reader(&mut cursor).map_err(|e| EatError::Decode(e.to_string()))?;
+        if cursor.position() != bytes.len() as u64 {
+            return Err(EatError::Shape("trailing CBOR data".into()));
+        }
         token.validate_shape()?;
         Ok(token)
     }
 
-    fn validate_shape(&self) -> Result<(), EatError> {
+    pub fn validate_shape(&self) -> Result<(), EatError> {
         if self.version != EAT_VERSION {
             return Err(EatError::VersionMismatch {
                 expected: EAT_VERSION,
@@ -388,6 +431,38 @@ impl EatToken {
                 got: self.eat_profile.clone(),
             });
         }
+        if !matches!(self.binding_suite, 0..=2) {
+            return Err(EatError::Shape(format!(
+                "unknown binding suite {}",
+                self.binding_suite
+            )));
+        }
+        if self.binding_suite != BINDING_SUITE_COMPOSITE
+            && (!self.gpu_evidence.is_empty() || !self.boot_evidence.is_empty())
+        {
+            return Err(EatError::Shape(
+                "composite evidence requires binding suite 2".into(),
+            ));
+        }
+        if self.platform_enum().is_none() {
+            return Err(EatError::Shape("unknown platform".into()));
+        }
+        if matches!(self.platform, 4 | 5) && self.binding_suite != BINDING_SUITE_COMPOSITE {
+            return Err(EatError::Shape(
+                "TPM composite profiles require binding suite 2".into(),
+            ));
+        }
+        if self.gpu_evidence.len() > 8 * 1024 * 1024 || self.boot_evidence.len() > 16 * 1024 * 1024
+        {
+            return Err(EatError::Shape("evidence exceeds size limit".into()));
+        }
+        if self.platform_quote.len() > 4 * 1024 * 1024
+            || self.previous_attestation.len() > 8 * 1024 * 1024
+        {
+            return Err(EatError::Shape(
+                "CPU quote or preceding stage exceeds size limit".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -397,6 +472,8 @@ impl EatToken {
             1 => Some(Platform::Nitro),
             2 => Some(Platform::SevSnp),
             3 => Some(Platform::Tdx),
+            4 => Some(Platform::AzureSnpVtpm),
+            5 => Some(Platform::AwsSnpNitroTpm),
             _ => None,
         }
     }
@@ -408,6 +485,8 @@ pub fn platform_to_u8(p: Platform) -> u8 {
         Platform::Nitro => 1,
         Platform::SevSnp => 2,
         Platform::Tdx => 3,
+        Platform::AzureSnpVtpm => 4,
+        Platform::AwsSnpNitroTpm => 5,
     }
 }
 
@@ -475,6 +554,8 @@ impl EatToken {
             iat,
             eat_nonce: nonce,
             previous_attestation: Vec::new(),
+            gpu_evidence: Vec::new(),
+            boot_evidence: Vec::new(),
         }
     }
 }
@@ -557,6 +638,8 @@ mod tests {
             iat: 1_713_312_000,
             eat_nonce: [0x77; 32],
             previous_attestation: Vec::new(),
+            gpu_evidence: Vec::new(),
+            boot_evidence: Vec::new(),
         }
     }
 

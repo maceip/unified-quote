@@ -6,6 +6,9 @@
 
 #[cfg(feature = "sev-snp")]
 pub mod azure;
+#[cfg(feature = "sev-snp")]
+pub mod azure_composite;
+pub mod composite;
 #[cfg(feature = "desktop")]
 pub mod desktop;
 pub mod detect;

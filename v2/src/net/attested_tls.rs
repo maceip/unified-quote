@@ -167,6 +167,10 @@ pub fn extract_eat_from_cert(cert_der: &[u8]) -> Result<Option<Vec<u8>>> {
     use x509_cert::der::Decode;
     use x509_cert::Certificate;
 
+    anyhow::ensure!(
+        cert_der.len() <= MAX_ATTESTED_CERT_BYTES,
+        "attested certificate exceeds size limit"
+    );
     let cert = Certificate::from_der(cert_der).map_err(|e| anyhow!("x509 decode: {e}"))?;
 
     let exts = match &cert.tbs_certificate.extensions {
@@ -177,18 +181,33 @@ pub fn extract_eat_from_cert(cert_der: &[u8]) -> Result<Option<Vec<u8>>> {
     let target_oid = x509_cert::der::asn1::ObjectIdentifier::new("2.23.133.5.4.9")
         .map_err(|e| anyhow!("oid parse: {e}"))?;
 
-    for ext in exts {
-        if ext.extn_id == target_oid {
-            let inner = ext.extn_value.as_bytes().to_vec();
-            // rcgen double-wraps in an extra OCTET STRING. Peel if present.
-            if let Ok(outer) = x509_cert::der::asn1::OctetString::from_der(&inner) {
-                return Ok(Some(outer.as_bytes().to_vec()));
-            }
-            return Ok(Some(inner));
-        }
+    let mut matches = exts.iter().filter(|ext| ext.extn_id == target_oid);
+    let Some(ext) = matches.next() else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        matches.next().is_none(),
+        "duplicate attestation extensions are ambiguous"
+    );
+    let inner = ext.extn_value.as_bytes();
+    anyhow::ensure!(
+        !inner.is_empty() && inner.len() <= MAX_ATTESTED_EVIDENCE_BYTES,
+        "attestation extension size outside limit"
+    );
+    // Accept the historical OCTET STRING wrapper only when the entire value
+    // is one DER object. Neither form is admitted until the full verifier runs.
+    if let Ok(outer) = x509_cert::der::asn1::OctetString::from_der(inner) {
+        anyhow::ensure!(
+            !outer.as_bytes().is_empty(),
+            "empty wrapped attestation extension"
+        );
+        return Ok(Some(outer.as_bytes().to_vec()));
     }
-    Ok(None)
+    Ok(Some(inner.to_vec()))
 }
+
+const MAX_ATTESTED_EVIDENCE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_ATTESTED_CERT_BYTES: usize = MAX_ATTESTED_EVIDENCE_BYTES + 64 * 1024;
 
 /// Recompute the TLS SPKI hash from a DER-encoded leaf certificate.
 /// Used by the verifier to compare against `eat.tls_spki_hash`.
@@ -196,6 +215,10 @@ pub fn spki_hash_of_cert(cert_der: &[u8]) -> Result<[u8; 32]> {
     use x509_cert::der::{Decode, Encode};
     use x509_cert::Certificate;
 
+    anyhow::ensure!(
+        cert_der.len() <= MAX_ATTESTED_CERT_BYTES,
+        "attested certificate exceeds size limit"
+    );
     let cert = Certificate::from_der(cert_der).map_err(|e| anyhow!("x509 decode: {e}"))?;
     let spki_der = cert
         .tbs_certificate
@@ -259,5 +282,29 @@ mod tests {
         let der = cert.der().to_vec();
         let found = extract_eat_from_cert(&der).unwrap();
         assert!(found.is_none());
+    }
+
+    #[test]
+    fn duplicate_evidence_extensions_are_rejected_instead_of_selecting_first() {
+        let kp = generate_keypair().unwrap();
+        let mut params = rcgen::CertificateParams::new(vec!["duplicate.local".into()]).unwrap();
+        for payload in [b"first".as_slice(), b"second".as_slice()] {
+            params
+                .custom_extensions
+                .push(rcgen::CustomExtension::from_oid_content(
+                    &[2, 23, 133, 5, 4, 9],
+                    payload.to_vec(),
+                ));
+        }
+        let cert = params.self_signed(&kp).unwrap();
+        let error = extract_eat_from_cert(cert.der()).unwrap_err();
+        assert!(error.to_string().contains("duplicate attestation"));
+    }
+
+    #[test]
+    fn empty_evidence_extension_is_rejected() {
+        let kp = generate_keypair().unwrap();
+        let cert = make_attested_cert(&kp, "empty.local", &[]).unwrap();
+        assert!(extract_eat_from_cert(&cert.cert_der).is_err());
     }
 }

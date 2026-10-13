@@ -12,6 +12,7 @@ name = "uq-runner"
 version = "0.1.0"
 edition = "2021"
 description = "Attestation shim for GitHub Actions runners in TEEs"
+repository = "https://github.com/ZUNFTMAX/zmax-universal-attestations"
 
 [features]
 default = ["nitro", "sev-snp", "tdx"]

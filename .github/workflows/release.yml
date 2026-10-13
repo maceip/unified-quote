@@ -1,17 +1,10 @@
 name: release
 
-# Every push to main cuts a tagged release with cross-platform `uq` binaries.
-# Verification is fully portable; TEE collection is cfg-gated to the platforms
-# that have the hardware, so the CLI builds and runs everywhere.
+# Publication is held until hardware acceptance covers this exact revision.
+# Set UQ_HARDWARE_ACCEPTED_SHA only after recording the joint acceptance pass,
+# then dispatch this workflow. A build/provenance result is not hardware proof.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "v2/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - ".github/workflows/release.yml"
   workflow_dispatch:
 
 permissions:
@@ -23,6 +16,7 @@ concurrency:
 
 jobs:
   build:
+    if: vars.UQ_HARDWARE_ACCEPTED_SHA == github.sha
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -44,7 +38,20 @@ jobs:
         run: rustup target add ${{ matrix.target }}
 
       - name: Build uq
-        run: cargo build --release -p unified-quote --bin uq --target ${{ matrix.target }}
+        run: cargo build --locked --release -p unified-quote --features gpu --bin uq --target ${{ matrix.target }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.3'
+          cache-dependency-path: v2/google-attestation/go.sum
+
+      - name: Build Google adapter
+        shell: bash
+        run: |
+          mkdir -p dist
+          suffix=""
+          if [[ '${{ runner.os }}' == Windows ]]; then suffix=.exe; fi
+          ./v2/google-attestation/build.sh "dist/uq-google-attestation-${{ matrix.target }}$suffix"
 
       - name: Stage (unix)
         if: runner.os != 'Windows'
@@ -55,6 +62,8 @@ jobs:
           out="uq-${{ matrix.target }}"
           cp "target/${{ matrix.target }}/release/uq" "dist/$out"
           ( cd dist && shasum -a 256 "$out" > "$out.sha256" )
+          adapter="uq-google-attestation-${{ matrix.target }}"
+          ( cd dist && shasum -a 256 "$adapter" > "$adapter.sha256" )
 
       - name: Stage (windows)
         if: runner.os == 'Windows'
@@ -64,6 +73,8 @@ jobs:
           $out = "uq-${{ matrix.target }}.exe"
           Copy-Item "target/${{ matrix.target }}/release/uq.exe" "dist/$out"
           (Get-FileHash "dist/$out" -Algorithm SHA256).Hash.ToLower() + "  $out" | Set-Content "dist/$out.sha256"
+          $adapter = "uq-google-attestation-${{ matrix.target }}.exe"
+          (Get-FileHash "dist/$adapter" -Algorithm SHA256).Hash.ToLower() + "  $adapter" | Set-Content "dist/$adapter.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -72,6 +83,7 @@ jobs:
           if-no-files-found: error
 
   release:
+    if: vars.UQ_HARDWARE_ACCEPTED_SHA == github.sha
     needs: build
     runs-on: ubuntu-latest
     permissions:

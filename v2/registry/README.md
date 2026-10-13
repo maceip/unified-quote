@@ -29,22 +29,19 @@ Filename: `<value_x[0..16]>.json` — short prefix of Value X, for easy lookup.
 
 Each entry has a detached signature sidecar: `<value_x[0..16]>.json.sig`.
 
-**Today:** unsigned entries are informational only, and sidecars are reported
-as unchecked until Sigstore verification lands in `src/registry.rs`. The
-signer will be Sigstore keyless (cosign + Fulcio + GitHub OIDC), so a
-maintainer never holds a key — the CI workflow identity is what signs.
-
-**Migration path:** swap the verifier impl in `src/registry.rs`. The
-on-disk format does not change.
+Raw public-key sidecars authenticate the exact JSON bytes against an
+independently pinned SPKI. Unsigned entries are informational. Keyless Sigstore
+sidecars currently remain **untrusted**: the library does not yet verify Fulcio
+trust, certificate time, SCTs and Rekor transparency proofs. A detached signature
+and a certificate containing matching SAN/OIDC labels cannot authorize a registry
+entry or a revocation snapshot.
 
 ## Trust model
 
-- **Who can add entries:** whoever controls the Sigstore signing identity
-  (the GitHub workflow in `.github/workflows/registry-sign.yml`).
-- **Who verifies:** anyone — verification is `cosign verify-blob` against
-  the pinned identity.
-- **What's in the trust chain:** Sigstore root → Fulcio CA → GitHub OIDC
-  issuer → workflow path. All pinned in `src/registry.rs`.
+Relying parties configure their own pinned raw signing keys. The built-in
+GitHub keyless identity is reserved configuration and currently cannot produce a
+verified registry result. A future complete Sigstore implementation requires its
+own explicit trust and transparency policy.
 
 ## How it's used
 

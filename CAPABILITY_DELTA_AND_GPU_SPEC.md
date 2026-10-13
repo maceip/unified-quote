@@ -2,11 +2,30 @@
 
 This document defines the architectural gap analysis, NVIDIA GPU/NVLink attestation design, boot-chain measurement requirements, and OS integration interfaces for `zmax-universal-attestations` (formerly `unified-quote`). It establishes the roadmap for transitioning the pure-Rust confidential computing attestation engine positioned under the `ZUNFTMAX` organization (`ZUNFTMAX/zmax-universal-attestations`) alongside the `zmax-ntrust` confidential VM stack.
 
+**Implementation status (2026-10-13):** `v2/src/gpu/` now contains native
+NVML/NSCQ collection, pinned certificate validation, signed revocation and
+reference manifests, measurement/security/inventory policy, and composite CPU
+binding. Boot replay, closure measurement, current CPU vendor-collateral/TCB
+appraisal and local service interfaces are also implemented. The
+[implementation ledger](v2/IMPLEMENTATION_STATUS.md) distinguishes
+source work, unresolved vendor/profile requirements and hardware acceptance.
+[GPU usage and boundaries](v2/GPU.md) describe the supported profiles. No new
+hardware acceptance, deployment, publication or user admission is claimed.
+
+**Library reuse update (2026-10-13):** the user authorized Google library reuse
+while retaining the Rust API, and requires approval for any new non-Google
+library. Google's TCG replay adapter is integrated; additional Google CPU,
+GPU and Authenticode adoption is tracked with exact dependency approval status
+in [UPSTREAM_REUSE.md](v2/UPSTREAM_REUSE.md). The original pure-Rust-only design
+below records the baseline; it does not prohibit this explicitly authorized
+local helper. No external cloud verification service is introduced.
+
 ---
 
 ## 1. Capability Delta: Current State vs. State-of-the-Art Reference Toolchains
 
-The following matrix contrasts the current implementation of `unified-quote` (`v2`) against leading industry-reference attestation stacks across four critical dimensions:
+The following matrix records the **pre-implementation baseline** and required
+upgrades. Use the implementation ledger above for current source status.
 
 | Dimension | `unified-quote` (Current State) | Industry-Reference Architecture | Delta & Required Upgrades |
 | :--- | :--- | :--- | :--- |
@@ -86,7 +105,7 @@ In previous image builds, guest operating system images attempted to handle GPU 
 ```
 
 1. **Hardware Evidence Extraction:**
-   - Dynamically binds to `libnvidia-ml.so` via pure-Rust FFI (`nvmlDeviceGetFieldValues` / `nvmlDeviceGetConfidentialComputingGpuCertificate`) to pull raw SPDM quotes without shelling out to external binaries.
+   - Dynamically binds to NVML via Rust FFI (`nvmlDeviceGetConfComputeGpuCertificate` / `nvmlDeviceGetConfComputeGpuAttestationReport`) to pull raw SPDM quotes without shelling out to external binaries.
    - For HGX platforms, binds to `libnvidia-nscq.so` to extract NVSwitch attestation reports.
 2. **Device Certificate Chain Verification:**
    - Validates the X.509 certificate chain from the GPU device-unique alias key up to the pinned **NVIDIA Device Identity Root CA** (`p384` / `ecdsa-p384`).
@@ -97,8 +116,12 @@ In previous image builds, guest operating system images attempted to handle GPU 
 4. **Runtime Measurement Comparison:**
    - Compares the hardware SPDM measurements returned by the GPU against the golden values extracted from the verified RIM.
    - Fails immediately if any driver module, VBIOS partition, or debug mode flag deviates from the manifest.
-5. **Revocation & Offline Caching:**
-   - Supports both online OCSP checking and **100% offline air-gapped verification** using cached `.textproto` or JSON certificate revocation lists, validating that evidence was valid at the recorded timestamp.
+5. **Revocation and Caching:**
+   - Authenticate original signed DER OCSP responses and CRLs, whether fetched
+     or cached. JSON is only a transport container; unsigned status records and
+     caller-supplied timestamps cannot establish trust. Runtime verification
+     requires freshness against the verifier's clock and status for every
+     non-root certificate. Missing alias coverage remains a vendor-profile gap.
 
 ---
 
@@ -109,25 +132,38 @@ To guarantee that any third party can fork the repository, build an image, boot 
 ### 3.1 TCG Event Log & CCEL Replay in Rust
 Currently, reading raw PCR or RTMR registers provides an opaque 32-byte or 48-byte hash. If an unexpected hash is observed, the operator cannot identify whether firmware, the bootloader, the kernel, or command-line parameters changed.
 
-`unified-quote` will incorporate a pure-Rust event log parser:
+`unified-quote::boot` implements a Rust event log parser:
 - **ACPI CCEL (Confidential Computing Event Log):** On Intel TDX platforms, reads `/sys/firmware/acpi/tables/data/CCEL` and replays the binary events into simulated `RTMR[0..3]`.
 - **TCG 2.0 Binary Event Log:** On TPM platforms (including Azure HCL and AWS NitroTPM), reads `/sys/kernel/security/tpm0/binary_bios_measurements` and replays events against PCR banks.
-- **Verification Output:** Replay produces a human-readable and machine-verifiable manifest proving:
-  - Exact UEFI firmware volume hash (`RTMR0` / `PCR 0`)
-  - Exact bootloader binary hash (`RTMR1` / `PCR 4`)
-  - Exact kernel binary and command-line parameters (`RTMR1` / `PCR 8,9`)
+- **Verification Output:** Replay becomes authenticated only after comparison
+  with registers from a fully verified quote. Expected firmware, loader and
+  kernel digests come from independent policy; event descriptions alone are
+  not authenticated identities. Under the UEFI CCEL profile, MRIndex 1/2/3 map
+  to RTMR0/1/2, and PCR 8–15 map to RTMR2. The explicit CoCo AAEL TCG2
+  profile authenticates RTMR3 runtime events against independent ordered policy. See [boot measurement semantics](v2/BOOT_MEASUREMENTS.md).
 
 ### 3.2 Root Filesystem Measurement via `dm-verity`
 Because cloud environments mutate local state on first boot (e.g., dynamic network provisioning, ephemeral machine IDs), hashing raw disk blocks after boot produces non-deterministic measurements.
 
-The solution implemented across `unified-quote` and `zmax-ntrust`:
+The integration requirements across `unified-quote` and `zmax-ntrust`:
 1. **Read-Only System Closure (`Value X`):**
    - The root filesystem contains an immutable system tree comprising kernel binaries, systemd units, admission scripts, and pinned application lockfiles.
-   - `unified-quote::value_x` computes a deterministic 48-byte SHA-384 Merkle tree hash over this sorted closure.
+   - `unified-quote::boot::closure` implements an explicit sorted-file SHA-384
+     Merkle identity with path, permission and content commitments. It does not
+     change the existing `value_x` source-tree hash format.
 2. **Hardware Kernel Command-Line Extension (`dm-verity`):**
    - When configured with `dm-verity`, the root filesystem's Merkle tree root hash (`roothash=<hex>`) is embedded directly into the kernel command line or a Unified Kernel Image (UKI).
-   - The bootloader measures the UKI into hardware registers (`RTMR1` / `PCR 8,9`) before the kernel boots.
-   - `unified-quote` recomputes `Value X` and verifies that the `roothash` active in the hardware boot log matches the static manifest, binding the entire disk image into the hardware quote before workload execution begins.
+   - The loader's exact measurement profile determines the registers and
+     encoding. GRUB command-line and systemd load-options profiles are
+     implemented. The systemd-stub v258 UKI profiles authenticate section
+     name/content pairs, explicit multi-profile/device selection and supported
+     add-ons against signed registers and independently approved digests.
+     Effective-command-line policy accounts for all supported measured inputs;
+     unsupported combinations reject.
+   - Verify the measured `roothash` against an independently approved dm-verity
+     manifest. This is a measured root commitment, not proof of the effective
+     mounted filesystem. A closure hash and a dm-verity block Merkle root are
+     distinct identities and must never be equated.
 
 ---
 
@@ -140,12 +176,17 @@ For use in build pipelines, cloud-init scripts, and administrative debugging:
 
 ```bash
 # Collect composite CPU + GPU evidence with a fresh client nonce
-uq collect --nonce <64-hex> --gpu --out /run/ntrust/attestation.cbor
+uq collect --nonce <64-hex> --tls-spki <actual-spki.der> --value-x <96-hex> \
+  --gpu --out /run/ntrust/attestation.cbor
 
 # Verify an endpoint or captured receipt against pinned silicon roots
 uq verify /run/ntrust/attestation.cbor \
+  --nonce <same-64-hex> --tls-spki <observed-spki.der> \
   --expected-value-x <96-hex> \
   --expected-mrtd <96-hex> \
+  --cpu-collateral <signed-cpu-collateral.json> \
+  --cpu-tcb-policy <approved-tcb-policy.json> \
+  --require-gpu-verified --gpu-policy <enrolled-inventory.json> \
   --json
 
 # Probe and display live TEE platform & GPU readiness status
@@ -159,9 +200,13 @@ For integration with web servers (e.g., NGINX reverse proxies) and containerized
   ```http
   GET /v1/attest?nonce=<64-hex> HTTP/1.1
   Host: 127.0.0.1:8082
-  Accept: application/eat+json, application/cbor
+  Accept: application/json
   ```
-- **Zero Configuration Overhead:** The guest OS simply forwards `GET /v1/attest` traffic from port 443 to `127.0.0.1:8082`. `unified-quote` automatically handles NVML evidence gathering, ConfigFS-TSM quote requests, and TLS SPKI binding.
+- **Explicit deployment configuration:** the HTTPS terminator supplies its
+  actual SPKI DER, updated on rotation. The relying party compares it with its
+  own TLS connection and supplies approved launch/application/device policy.
+  The local service handles fresh collection and CPU commitments. Forwarding an
+  HTTP request alone does not establish TLS key ownership.
 
 ### 4.3 Native Rust Library Crate (`unified-quote`)
 For high-performance in-process integration directly within Rust services:
@@ -179,6 +224,7 @@ use unified_quote::{
 let collector = AttestationCollector::builder()
     .with_nonce(&client_nonce)
     .with_tls_spki_der(&leaf_cert_spki_der)
+    .with_value_x(&expected_value_x)
     .with_gpu_topology(GpuTopologyMode::AutoDetect) // SPT, MPT, or PPCIE
     .build()?;
 
@@ -189,13 +235,19 @@ let cbor_bytes = eat_token.to_cbor()?;
 let verifier = AttestationVerifier::builder()
     .require_platform(Platform::Tdx)
     .require_gpu_verified(true)
+    .with_expected_nonce(&client_nonce)
+    .with_tls_spki_der(&observed_tls_spki_der)
     .with_expected_value_x(&expected_value_x)
+    .with_expected_platform_measurement(&approved_mrtd)
+    .with_cpu_collateral(signed_cpu_collateral)
+    .with_cpu_tcb_policy(approved_cpu_tcb_policy)
+    .with_gpu_policy(enrolled_gpu_policy)
     .with_pinned_vendor_roots() // AMD, Intel, AWS Nitro, NVIDIA Device Root
     .build()?;
 
-let verdict = verifier.verify(&eat_token)?;
+let verdict = verifier.verify(&eat_token);
 assert!(verdict.is_valid());
-println!("Verified TEE: {:?}, GPU Model: {:?}", verdict.platform, verdict.gpu_model);
+println!("{}", serde_json::to_string(&verdict)?);
 ```
 
 ---

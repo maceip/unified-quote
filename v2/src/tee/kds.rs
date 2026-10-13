@@ -1,8 +1,8 @@
 //! AMD Key Distribution Service (KDS) client.
 //!
 //! Fetches VCEK certificates and cert chains from AMD's public KDS at
-//! https://kdsintf.amd.com. This is the fallback when SNP_GET_EXT_REPORT
-//! doesn't include certificates (host didn't populate the cert table).
+//! https://kdsintf.amd.com for the legacy signature-inspection API. Strict
+//! admission uses explicit signed collateral and independent product/TCB policy.
 //!
 //! Also fetches ASK + ARK cert chain for the product family.
 //!
@@ -17,11 +17,9 @@ const KDS_BASE: &str = "https://kdsintf.amd.com";
 /// retrying are always safe. Honors `Retry-After` when present, else
 /// exponential backoff.
 ///
-/// The cache removes KDS from the issuance hot path: once a verifier has seen a
-/// product's roots/VCEK, subsequent verifications are offline and unaffected by
-/// KDS availability. Cache integrity is a content digest pinned in the manifest
-/// (tamper-evident at rest); the certificates additionally chain to the AMD ARK,
-/// so a poisoned cache cannot forge a valid chain.
+/// Cached bytes remain untrusted. Their local digest detects corruption but
+/// does not authenticate a writer who can change both files. Certificate path,
+/// time validity and any required revocation/TCB appraisal remain mandatory.
 fn kds_get(url: &str) -> Result<Vec<u8>, String> {
     let cache_dir = cache::dir();
     if let Some(dir) = &cache_dir {
@@ -40,6 +38,8 @@ fn kds_get(url: &str) -> Result<Vec<u8>, String> {
 /// The network half of [`kds_get`], with no cache.
 fn kds_get_network(url: &str) -> Result<Vec<u8>, String> {
     let client = reqwest::blocking::Client::builder()
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| format!("HTTP client: {e}"))?;
@@ -69,10 +69,15 @@ fn kds_get_network(url: &str) -> Result<Vec<u8>, String> {
         };
         let status = resp.status();
         if status.is_success() {
-            return resp
-                .bytes()
-                .map(|b| b.to_vec())
-                .map_err(|e| format!("KDS read body: {e}"));
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            resp.take(256 * 1024 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|e| format!("KDS read body: {e}"))?;
+            if bytes.is_empty() || bytes.len() > 256 * 1024 {
+                return Err("KDS certificate response size outside limit".into());
+            }
+            return Ok(bytes);
         }
         // Retry on rate-limit / transient server errors; fail fast otherwise.
         if status.as_u16() == 429 || status.is_server_error() {
@@ -106,6 +111,9 @@ pub fn fetch_vcek(
     snp_spl: u8,
     ucode_spl: u8,
 ) -> Result<Vec<u8>, String> {
+    if !matches!(product, "Milan" | "Genoa") || chip_id.len() != 64 {
+        return Err("legacy VCEK acquisition requires Milan/Genoa and a 64-byte chip ID; Turin needs explicit FMC-aware collateral".into());
+    }
     let chip_id_hex = hex::encode(chip_id);
     let url = format!(
         "{KDS_BASE}/vcek/v1/{product}/{chip_id_hex}?blSPL={bl_spl}&teeSPL={tee_spl}&snpSPL={snp_spl}&ucodeSPL={ucode_spl}"
@@ -149,6 +157,9 @@ pub fn fetch_cert_chain(product: &str) -> Result<(Vec<u8>, Vec<u8>), String> {
 ///
 /// Returns (intermediate DER, ARK DER).
 pub fn fetch_cert_chain_kind(product: &str, kind: &str) -> Result<(Vec<u8>, Vec<u8>), String> {
+    if !matches!(product, "Milan" | "Genoa" | "Turin") || !matches!(kind, "vcek" | "vlek") {
+        return Err("unsupported AMD product or endorsement kind".into());
+    }
     let url = format!("{KDS_BASE}/{kind}/v1/{product}/cert_chain");
 
     eprintln!("[uq/kds] Fetching {kind} cert chain from AMD KDS: {url}");
@@ -174,6 +185,9 @@ pub fn extract_kds_params(report: &[u8]) -> Result<(String, Vec<u8>, u8, u8, u8,
     }
 
     let product = snp_product(report)?;
+    if product == "Turin" {
+        return Err("legacy KDS parameters cannot represent Turin FMC; provide explicit endorsement collateral".into());
+    }
 
     // CHIP_ID at offset 0x1A0 (64 bytes), per the AMD SEV-SNP ABI
     // (ATTESTATION_REPORT). 0x140 is REPORT_ID — using it produced the wrong
@@ -204,12 +218,12 @@ pub fn extract_kds_params(report: &[u8]) -> Result<(String, Vec<u8>, u8, u8, u8,
 /// IMPORTANT: the product is a function of the CPU family/model, NOT the
 /// report *format* version (offset 0x000). Report formats >= 3 carry CPUID
 /// fields at offset 0x188 (`cpuid_fam_id`, `cpuid_mod_id`, `cpuid_step`);
-/// legacy v2 reports predate Genoa and are therefore always Milan.
+/// legacy v2 reports lack this identity and require independent product policy.
 ///
 /// Family/model → product (per AMD's KDS naming):
 ///   - 0x19, model 0x00..=0x0F → Milan  (Zen 3, e.g. EPYC 7R13)
 ///   - 0x19, model 0x10..=0x1F → Genoa  (Zen 4)
-///   - 0x1A, any model         → Turin  (Zen 5)
+///   - 0x1A, model 0x00..=0x1F → Turin  (AMD revision guides 58251/58730)
 pub fn snp_product(report: &[u8]) -> Result<&'static str, String> {
     if report.len() < 0x18b {
         return Err(format!(
@@ -219,14 +233,14 @@ pub fn snp_product(report: &[u8]) -> Result<&'static str, String> {
     }
     let fam = report[0x188];
     let model = report[0x189];
-    // Legacy v2 reports leave 0x188 reserved (zero) — those are Milan-era.
-    if fam == 0 {
-        return Ok("Milan");
+    let version = u32::from_le_bytes(report[..4].try_into().unwrap());
+    if !matches!(version, 3..=5) || fam == 0 {
+        return Err("SNP product is unavailable from this report; supply independent product policy and collateral".into());
     }
     match (fam, model) {
         (0x19, 0x00..=0x0f) => Ok("Milan"),
         (0x19, 0x10..=0x1f) => Ok("Genoa"),
-        (0x1a, _) => Ok("Turin"),
+        (0x1a, 0x00..=0x1f) => Ok("Turin"),
         _ => Err(format!(
             "unknown AMD product: cpuid family {fam:#x} model {model:#x}"
         )),
@@ -261,10 +275,11 @@ fn parse_pem_certs(pem_str: &str) -> Vec<Vec<u8>> {
 /// Each entry is a `<sha256(url)>.bin` blob plus a `<sha256(url)>.json`
 /// manifest recording the source url, fetch time, ttl, and a SHA-256 of the
 /// blob. A load returns the bytes only when the manifest matches the blob hash
-/// AND the entry is unexpired — a flipped byte or a stale entry is a miss, not a
-/// silent wrong answer.
+/// AND the entry is unexpired. This is a transport cache, not an authenticated
+/// certificate or revocation verdict.
 pub mod cache {
     use sha2::{Digest, Sha256};
+    use std::io::Read;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -275,6 +290,7 @@ pub mod cache {
     /// evidence (VCEK/VLEK chains) indefinitely; freshness can be tightened but
     /// never relaxed past 30 days.
     const MAX_TTL_SECS: u64 = 30 * 24 * 3600;
+    const MAX_BLOB_BYTES: usize = 256 * 1024;
 
     #[derive(serde::Serialize, serde::Deserialize)]
     struct Manifest {
@@ -328,20 +344,34 @@ pub mod cache {
         }
     }
 
-    /// Return cached bytes for `url` if present, fresh, and digest-matched.
+    fn read_bounded(path: &Path, limit: usize) -> Option<Vec<u8>> {
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)
+            .ok()?
+            .take(limit as u64 + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        (!bytes.is_empty() && bytes.len() <= limit).then_some(bytes)
+    }
+
+    /// Return untrusted cached bytes if present, fresh, and digest-matched.
     pub fn load(dir: &Path, url: &str) -> Option<Vec<u8>> {
         let k = key(url);
         let manifest_path = dir.join(format!("{k}.json"));
         let blob_path = dir.join(format!("{k}.bin"));
         let manifest: Manifest =
-            serde_json::from_slice(&std::fs::read(&manifest_path).ok()?).ok()?;
+            serde_json::from_slice(&read_bounded(&manifest_path, 8192)?).ok()?;
         if manifest.url != url {
             return None; // sha256 collision guard / corruption
         }
-        if now() >= manifest.fetched_at.saturating_add(manifest.ttl_secs) {
+        let current_time = now();
+        if manifest.fetched_at > current_time
+            || manifest.ttl_secs > MAX_TTL_SECS
+            || current_time >= manifest.fetched_at.saturating_add(manifest.ttl_secs)
+        {
             return None; // expired (ttl 0 == immediately expired)
         }
-        let blob = std::fs::read(&blob_path).ok()?;
+        let blob = read_bounded(&blob_path, MAX_BLOB_BYTES)?;
         if hex::encode(Sha256::digest(&blob)) != manifest.sha256 {
             eprintln!("[uq/kds] cache entry for {url} failed digest pin; ignoring");
             return None;
@@ -352,6 +382,9 @@ pub mod cache {
     /// Write `bytes` for `url` with the given TTL. Best-effort: cache write
     /// failures are logged and never fail the fetch.
     pub fn store(dir: &Path, url: &str, bytes: &[u8], ttl_secs: u64) {
+        if bytes.is_empty() || bytes.len() > MAX_BLOB_BYTES {
+            return;
+        }
         if let Err(e) = std::fs::create_dir_all(dir) {
             eprintln!("[uq/kds] cache dir create failed: {e}");
             return;
@@ -360,7 +393,7 @@ pub mod cache {
         let manifest = Manifest {
             url: url.to_string(),
             fetched_at: now(),
-            ttl_secs,
+            ttl_secs: ttl_secs.min(MAX_TTL_SECS),
             sha256: hex::encode(Sha256::digest(bytes)),
         };
         let blob_path = dir.join(format!("{k}.bin"));
@@ -417,5 +450,51 @@ mod cache_tests {
     fn unknown_url_is_a_miss() {
         let dir = tempfile::tempdir().unwrap();
         assert!(cache::load(dir.path(), "https://kdsintf.amd.com/nope").is_none());
+    }
+
+    #[test]
+    fn forged_cache_time_and_oversized_data_are_misses() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = "https://kdsintf.amd.com/vcek/v1/Genoa/cert_chain";
+        let k = hex::encode(sha2::Sha256::digest(url.as_bytes()));
+        let path = dir.path().join(format!("{k}.json"));
+        cache::store(dir.path(), url, b"data", 3600);
+        let original = std::fs::read(&path).unwrap();
+        for (field, value) in [("fetched_at", u64::MAX), ("ttl_secs", u64::MAX)] {
+            let mut manifest: serde_json::Value = serde_json::from_slice(&original).unwrap();
+            manifest[field] = value.into();
+            std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+            assert!(cache::load(dir.path(), url).is_none());
+        }
+        let oversized = vec![0; 256 * 1024 + 1];
+        let mut manifest: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        manifest["sha256"] = hex::encode(sha2::Sha256::digest(&oversized)).into();
+        std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        std::fs::write(dir.path().join(format!("{k}.bin")), oversized).unwrap();
+        assert!(cache::load(dir.path(), url).is_none());
+    }
+
+    #[test]
+    fn product_detection_never_guesses_and_legacy_parameters_reject_turin() {
+        let mut report = vec![0; 1184];
+        report[..4].copy_from_slice(&2u32.to_le_bytes());
+        assert!(super::snp_product(&report).is_err());
+        report[..4].copy_from_slice(&5u32.to_le_bytes());
+        assert!(super::snp_product(&report).is_err());
+        for (family, model, expected) in [
+            (0x19, 0x01, "Milan"),
+            (0x19, 0x11, "Genoa"),
+            (0x1a, 0x02, "Turin"),
+            (0x1a, 0x11, "Turin"),
+        ] {
+            report[0x188] = family;
+            report[0x189] = model;
+            assert_eq!(super::snp_product(&report).unwrap(), expected);
+        }
+        assert!(super::extract_kds_params(&report).is_err());
+        report[0x189] = 0x90;
+        assert!(super::snp_product(&report).is_err());
+        assert!(super::fetch_vcek("Turin", &[0; 64], 1, 1, 1, 1).is_err());
+        assert!(super::fetch_cert_chain_kind("../Genoa", "vcek").is_err());
     }
 }
