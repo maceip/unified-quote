@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-10-13T17:04:50Z",
+  "updated_at": "2026-10-13T21:51:10Z",
   "generator": "report-live-quotes.yml",
   "schema": 1,
   "nodes": [
@@ -20,7 +20,7 @@
       "spki_binding": "PASS",
       "quote_signature": "PASS",
       "chain": "PASS (2 stage(s) walked)",
-      "checked_at": "2026-10-13T17:04:03Z",
+      "checked_at": "2026-10-13T21:51:08Z",
       "detail": "quote re-verified against pinned vendor root"
     },
     {
@@ -37,7 +37,7 @@
       "spki_binding": null,
       "quote_signature": null,
       "chain": null,
-      "checked_at": "2026-10-13T17:04:05Z",
+      "checked_at": "2026-10-13T21:51:10Z",
       "detail": "Error: TLS write: Connection reset by peer (os error 104)"
     },
     {
@@ -47,15 +47,16 @@
       "region": "westeurope",
       "platform": "SevSnp",
       "endpoint": "https://attest.secure.build:8443/",
-      "verdict": "offline",
+      "verdict": "failed",
       "value_x": null,
       "value_x_short": null,
       "measurements": {},
-      "spki_binding": null,
-      "quote_signature": null,
-      "chain": null,
-      "checked_at": "2026-10-13T17:04:50Z",
-      "detail": "no response within 45s"
+      "spki_binding": "report_data = sha256(runtime) \u2192 vTPM AK",
+      "quote_signature": "FAIL",
+      "chain": "vTPM HCL \u2192 SNP report \u2192 VCEK \u2192 ASK \u2192 ARK-Milan (pinned)",
+      "checked_at": "2026-10-13T21:51:10Z",
+      "detail": "Error: Legacy Azure HCL admission is unsupported; use the explicit azure-snp-vtpm composite profile with independent Azure and AMD policies; signature inspection cannot authorize serving or admission",
+      "value_x_bound": false
     },
     {
       "id": "gcp-tdx-usc1",
