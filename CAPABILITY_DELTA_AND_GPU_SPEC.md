@@ -1,6 +1,6 @@
 # Unified-Quote Capability Delta, GPU/NVLink Specification & OS Interface Architecture
 
-This document defines the architectural gap analysis, NVIDIA GPU/NVLink attestation design, boot-chain measurement requirements, and OS integration interfaces for `unified-quote`. It establishes the roadmap for transitioning `unified-quote` into an enterprise-grade, pure-Rust confidential computing attestation engine positioned under the `ZUNFTMAX` organization alongside the `zmax-ntrust` confidential VM stack.
+This document defines the architectural gap analysis, NVIDIA GPU/NVLink attestation design, boot-chain measurement requirements, and OS integration interfaces for `zmax-universal-attestations` (formerly `unified-quote`). It establishes the roadmap for transitioning the pure-Rust confidential computing attestation engine positioned under the `ZUNFTMAX` organization (`ZUNFTMAX/zmax-universal-attestations`) alongside the `zmax-ntrust` confidential VM stack.
 
 ---
 
@@ -205,14 +205,14 @@ println!("Verified TEE: {:?}, GPU Model: {:?}", verdict.platform, verdict.gpu_mo
 To unify confidential compute infrastructure under a single open-source identity:
 
 1. **Repository Relocation:**
-   - Move `maceip/unified-quote` into `https://github.com/ZUNFTMAX/unified-quote`.
+   - Moved to `https://github.com/ZUNFTMAX/zmax-universal-attestations`.
    - Update repository documentation, cargo package identifiers, and CI workflows to reflect the unified organization.
 2. **Cohesive Product Stack:**
-   - **`ZUNFTMAX/unified-quote`:** The foundational pure-Rust attestation and verification engine (CPU + GPU + Storage).
+   - **`ZUNFTMAX/zmax-universal-attestations`:** The foundational pure-Rust attestation and verification engine (CPU + GPU + Storage).
    - **`ZUNFTMAX/zmax-ntrust-vllm`:** Reference confidential GPU VM image running vLLM.
    - **`ZUNFTMAX/zmax-ntrust-sglang`:** Reference confidential GPU VM image running SGLang.
    - **`ZUNFTMAX/zmax-ntrust-relay`:** Lightweight confidential TEE proxy for remote inference origins.
    - **`ZUNFTMAX/zmax-ntrust-dev`:** CPU-first development and testing image.
 3. **Release Alignment:**
-   - VM build workflows in `zmax-ntrust-*` will directly consume pre-compiled, SLSA-provenance-attested `uq` binaries or crates published by `ZUNFTMAX/unified-quote`.
+   - VM build workflows in `zmax-ntrust-*` will directly consume pre-compiled, SLSA-provenance-attested `uq` binaries or crates published by `ZUNFTMAX/zmax-universal-attestations`.
    - This delivers a seamless, audit-ready confidential AI infrastructure stack with end-to-end silicon verification from hardware to inference tokens.
