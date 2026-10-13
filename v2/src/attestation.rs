@@ -33,6 +33,8 @@ pub struct AttestationCollectorBuilder {
     boot: Vec<u8>,
     build_claims: Option<BuildClaims>,
     cpu_profile: tee::composite::CpuCollectionProfile,
+    #[cfg(feature = "tdx")]
+    google_tdx_collector: Option<(crate::google_backend::GoogleVerifier, crate::google_backend::TdxTransport)>,
     #[cfg(feature = "gpu")]
     topology: Option<GpuTopologyMode>,
     #[cfg(feature = "gpu")]
@@ -58,11 +60,16 @@ impl AttestationCollector {
         let cfg = &self.config;
         let nonce = cfg.nonce.context("missing nonce")?;
         use tee::composite::CpuCollectionProfile;
+        #[cfg(feature = "tdx")]
+        let google_collection = cfg.google_tdx_collector.is_some();
+        #[cfg(not(feature = "tdx"))]
+        let google_collection = false;
         let provider = match &cfg.cpu_profile {
-            CpuCollectionProfile::Direct => Some(tee::detect::detect_tee()?),
+            CpuCollectionProfile::Direct if !google_collection => Some(tee::detect::detect_tee()?),
             _ => None,
         };
         let platform = match &cfg.cpu_profile {
+            CpuCollectionProfile::Direct if google_collection => Platform::Tdx,
             CpuCollectionProfile::Direct => provider
                 .as_ref()
                 .context("missing direct provider")?
@@ -174,6 +181,17 @@ impl AttestationCollector {
             token.validate_shape()?;
             return Ok(token);
         }
+        #[cfg(feature = "tdx")]
+        if let Some((google, transport)) = &cfg.google_tdx_collector {
+            let quote = google.collect_tdx(*transport, &report_data)?;
+            let start = crate::google_backend::tdx_body_offset(&quote)?;
+            // These are unverified collection observations. Admission verifies
+            // the quote and compares its signed measurement independently.
+            token.platform_measurement = quote[start + 136..start + 184].to_vec();
+            token.platform_quote = quote;
+            token.validate_shape()?;
+            return Ok(token);
+        }
         let quote = provider
             .context("missing direct provider")?
             .collect_evidence(&report_data)?;
@@ -231,6 +249,17 @@ impl AttestationCollectorBuilder {
         self.cpu_profile = profile;
         self
     }
+    /// Explicit TDX collection through the selected Google transport. No native
+    /// provider or alternate transport is tried if this operation fails.
+    #[cfg(feature = "tdx")]
+    pub fn with_google_tdx_collector(
+        mut self,
+        verifier: crate::google_backend::GoogleVerifier,
+        transport: crate::google_backend::TdxTransport,
+    ) -> Self {
+        self.google_tdx_collector = Some((verifier, transport));
+        self
+    }
     pub fn with_build_claims(mut self, claims: BuildClaims) -> Self {
         self.build_claims = Some(claims);
         self
@@ -247,6 +276,10 @@ impl AttestationCollectorBuilder {
     }
     pub fn build(self) -> Result<AttestationCollector> {
         self.cpu_profile.validate()?;
+        #[cfg(feature = "tdx")]
+        ensure!(self.google_tdx_collector.is_none()
+            || matches!(self.cpu_profile, tee::composite::CpuCollectionProfile::Direct),
+            "Google TDX collection requires the direct CPU profile");
         ensure!(
             self.nonce.is_some()
                 && self
@@ -322,6 +355,10 @@ pub struct AttestationVerifierBuilder {
     boot: Option<BootPolicy>,
     uki: Option<Vec<u8>>,
     google_boot_verifier: Option<crate::google_backend::GoogleVerifier>,
+    #[cfg(feature = "tdx")]
+    google_tdx_verifier: Option<crate::google_backend::GoogleVerifier>,
+    #[cfg(feature = "gpu")]
+    google_gpu_verifier: Option<crate::google_backend::GoogleVerifier>,
     prior_stage_policy: Option<crate::attestation_chain::PriorStagePolicy>,
     #[cfg(feature = "gpu")]
     gpu: Option<crate::gpu::verify::GpuPolicy>,
@@ -345,6 +382,10 @@ impl Default for AttestationVerifierBuilder {
             boot: None,
             uki: None,
             google_boot_verifier: None,
+            #[cfg(feature = "tdx")]
+            google_tdx_verifier: None,
+            #[cfg(feature = "gpu")]
+            google_gpu_verifier: None,
             prior_stage_policy: None,
             #[cfg(feature = "gpu")]
             gpu: None,
@@ -494,6 +535,20 @@ impl AttestationVerifier {
         );
         let mut tpm_registers: Option<AuthenticatedRegisters> = None;
         let values: BTreeMap<String, Vec<u8>> = match platform {
+            #[cfg(feature = "tdx")]
+            Platform::Tdx if cfg.google_tdx_verifier.is_some() => {
+                let (Some(CpuCollateral::IntelTdx(collateral)), Some(CpuTcbPolicy::IntelTdx { minimum_tcb_evaluation_data_number })) =
+                    (&cfg.cpu_collateral, &cfg.cpu_tcb_policy)
+                else { anyhow::bail!("Google TDX requires Intel collateral and independent TCB policy"); };
+                ensure!(matches!(token.binding_suite, 1 | 2), "Google TDX admission requires full report-data binding");
+                let values = cfg.google_tdx_verifier.as_ref().unwrap().verify_tdx(
+                    &token.platform_quote, &token.report_data_64(None),
+                    cfg.measurement.as_deref().context("missing approved MRTD")?,
+                    collateral, *minimum_tcb_evaluation_data_number,
+                )?;
+                verdict.pass("google_tdx", "Google quote verification and strict current collateral, revocation and independent TCB policy verified");
+                values
+            }
             #[cfg(feature = "sev-snp")]
             Platform::AzureSnpVtpm => {
                 let (Some(CpuCollateral::AmdSnp(collateral)), Some(CpuTcbPolicy::AmdSnp(tcb))) =
@@ -579,10 +634,15 @@ impl AttestationVerifier {
         );
         match platform {
             Platform::Tdx => {
-                let attr = token
-                    .platform_quote
-                    .get(168..176)
-                    .context("missing signed TD attributes")?;
+                #[cfg(feature = "tdx")]
+                let google_attributes = cfg.google_tdx_verifier.as_ref()
+                    .map(|_| values.get("TD_ATTRIBUTES").map(Vec::as_slice));
+                #[cfg(not(feature = "tdx"))]
+                let google_attributes: Option<Option<&[u8]>> = None;
+                let attr = match google_attributes {
+                    Some(attributes) => attributes.context("missing Google-authenticated TD attributes")?,
+                    None => token.platform_quote.get(168..176).context("missing signed TD attributes")?,
+                };
                 ensure!(
                     u64::from_le_bytes(attr.try_into()?) & 1 == 0,
                     "TDX debug mode is forbidden"
@@ -653,6 +713,13 @@ impl AttestationVerifier {
                     "trailing GPU evidence data"
                 );
                 verdict.gpu = Some(verifier.verify(&bundle, &token.eat_nonce, now)?);
+                if let Some(google) = &cfg.google_gpu_verifier {
+                    crate::gpu::google::verify(google, &bundle,
+                        cfg.gpu.as_ref().context("missing GPU inventory policy")?,
+                        verdict.gpu.as_ref().context("missing native GPU appraisal")?,
+                        &token.eat_nonce, now)?;
+                    verdict.pass("google_gpu", "Google GPU/NVSwitch signature, manifest, revocation and topology checks verified alongside application policy");
+                }
                 verdict.pass("gpu", "certificates, revocation, signatures, manifests, security and inventory policy verified");
             }
             #[cfg(not(feature = "gpu"))]
@@ -825,6 +892,20 @@ impl AttestationVerifierBuilder {
         self.google_boot_verifier = Some(verifier);
         self
     }
+    /// Select Google's TDX verifier instead of the native TDX implementation.
+    /// A rejection is final; it never triggers an alternate verifier.
+    #[cfg(feature = "tdx")]
+    pub fn with_google_tdx_verifier(mut self, verifier: crate::google_backend::GoogleVerifier) -> Self {
+        self.google_tdx_verifier = Some(verifier);
+        self
+    }
+    /// Require Google's GPU/NVSwitch appraisal as well as the application's
+    /// stricter certificate, security, inventory and binding policy.
+    #[cfg(feature = "gpu")]
+    pub fn with_google_gpu_verifier(mut self, verifier: crate::google_backend::GoogleVerifier) -> Self {
+        self.google_gpu_verifier = Some(verifier);
+        self
+    }
     /// Image bytes are untrusted until their section measurements agree with
     /// authenticated boot registers and independently approved UKI policy.
     pub fn with_uki_evidence(mut self, image: Vec<u8>) -> Self {
@@ -843,6 +924,16 @@ impl AttestationVerifierBuilder {
         self
     }
     pub fn build(mut self) -> Result<AttestationVerifier> {
+        #[cfg(feature = "tdx")]
+        if self.google_tdx_verifier.is_some() {
+            ensure!(self.platform == Some(Platform::Tdx), "Google TDX verifier requires explicit TDX platform policy");
+            ensure!(matches!(self.cpu_collateral, Some(CpuCollateral::IntelTdx(_)))
+                && matches!(self.cpu_tcb_policy, Some(CpuTcbPolicy::IntelTdx { minimum_tcb_evaluation_data_number: 1.. })),
+                "Google TDX requires Intel collateral and a nonzero TCB evaluation-data floor");
+        }
+        #[cfg(feature = "gpu")]
+        ensure!(self.google_gpu_verifier.is_none() || self.gpu.is_some(),
+            "Google GPU verification requires an enrolled GPU inventory policy");
         #[cfg(feature = "sev-snp")]
         if let Some(policy) = &self.azure_policy {
             ensure!(
